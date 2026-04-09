@@ -2,11 +2,11 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: Phase 2 Complete — Phase 3 Next
+## Status: Phase 3 Complete — Phase 4 Next
 
 **Last updated:** 2026-04-09
-**Current phase:** Phase 2 (Scene Building) ✅ — 30 tools implemented (15 Phase 1 + 15 Phase 2)
-**Next up:** Phase 3 (Assets & Resources) — asset browser, materials, models, audio
+**Current phase:** Phase 3 (Assets & Resources) ✅ — 42 tools implemented
+**Next up:** Phase 4 (Play & Test) — play mode control, runtime debugging, screenshots
 
 ---
 
@@ -45,7 +45,10 @@ Sbox-Claude/
 │   │       ├── console.ts             # get_console_output, get_compile_errors, clear_console
 │   │       ├── scenes.ts              # list_scenes, load_scene, save_scene, create_scene
 │   │       ├── gameobjects.ts         # create/delete/duplicate/rename, set_parent/enabled/transform, hierarchy, selection
-│   │       └── components.ts          # get_property, get_all_properties, list_available_components, add_component
+│   │       ├── components.ts          # get_property, get_all_properties, list_available_components, add_component
+│   │       ├── assets.ts              # search_assets, list_asset_library, install_asset, get_asset_info
+│   │       ├── materials.ts           # assign_model, create_material, assign_material, set_material_property
+│   │       └── audio.ts              # list_sounds, create_sound_event, assign_sound, play_sound_preview
 │   └── dist/                          # Compiled JS (gitignored, built with `npm run build`)
 │
 └── sbox-bridge-addon/                 # s&box Bridge Addon (C#)
@@ -87,7 +90,19 @@ Sbox-Claude/
             ├── GetSceneHierarchyHandler.cs
             ├── GetSelectedObjectsHandler.cs
             ├── SelectObjectHandler.cs
-            └── FocusObjectHandler.cs
+            ├── FocusObjectHandler.cs
+            ├── SearchAssetsHandler.cs
+            ├── ListAssetLibraryHandler.cs
+            ├── InstallAssetHandler.cs
+            ├── GetAssetInfoHandler.cs
+            ├── AssignModelHandler.cs
+            ├── CreateMaterialHandler.cs
+            ├── AssignMaterialHandler.cs
+            ├── SetMaterialPropertyHandler.cs
+            ├── ListSoundsHandler.cs
+            ├── CreateSoundEventHandler.cs
+            ├── AssignSoundHandler.cs
+            └── PlaySoundPreviewHandler.cs
 ```
 
 ---
@@ -134,11 +149,28 @@ Sbox-Claude/
 | `select_object` | `tools/gameobjects.ts` | `SelectObjectHandler.cs` | Programmatically select an object |
 | `focus_object` | `tools/gameobjects.ts` | `FocusObjectHandler.cs` | Move editor camera to look at object |
 
-### Phase 3 — Assets & Resources (NOT YET IMPLEMENTED)
+### Phase 3 — Assets & Resources (12 tools) ✅
 
-Planned tools: `search_assets`, `list_asset_library`, `install_asset`, `get_asset_info`, `assign_model`, `create_material`, `assign_material`, `set_material_property`, `list_sounds`, `create_sound_event`, `assign_sound`, `play_sound_preview`
+| Tool | MCP File | Bridge Handler | What It Does |
+|------|----------|----------------|-------------|
+| `search_assets` | `tools/assets.ts` | `SearchAssetsHandler.cs` | Search project assets by name/type |
+| `list_asset_library` | `tools/assets.ts` | `ListAssetLibraryHandler.cs` | Browse community asset packages |
+| `install_asset` | `tools/assets.ts` | `InstallAssetHandler.cs` | Add community package to project |
+| `get_asset_info` | `tools/assets.ts` | `GetAssetInfoHandler.cs` | Detailed asset metadata |
+| `assign_model` | `tools/materials.ts` | `AssignModelHandler.cs` | Set model on ModelRenderer (auto-creates) |
+| `create_material` | `tools/materials.ts` | `CreateMaterialHandler.cs` | New .vmat with shader + properties |
+| `assign_material` | `tools/materials.ts` | `AssignMaterialHandler.cs` | Apply material to renderer slot |
+| `set_material_property` | `tools/materials.ts` | `SetMaterialPropertyHandler.cs` | Change color, roughness, texture, etc. |
+| `list_sounds` | `tools/audio.ts` | `ListSoundsHandler.cs` | Find sound assets in project |
+| `create_sound_event` | `tools/audio.ts` | `CreateSoundEventHandler.cs` | New .sound with volume, pitch, falloff |
+| `assign_sound` | `tools/audio.ts` | `AssignSoundHandler.cs` | Attach sound to SoundPointComponent |
+| `play_sound_preview` | `tools/audio.ts` | `PlaySoundPreviewHandler.cs` | Preview sound in editor |
 
-### Phase 4–7 — See README.md roadmap
+### Phase 4 — Play & Test (NOT YET IMPLEMENTED)
+
+Planned tools: `start_play`, `stop_play`, `pause_play`, `resume_play`, `is_playing`, `get_runtime_objects`, `get_runtime_property`, `set_runtime_property`, `take_screenshot`, `undo`, `redo`
+
+### Phase 5–7 — See README.md roadmap
 
 ---
 

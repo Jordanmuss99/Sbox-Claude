@@ -76,6 +76,24 @@ public class BridgeAddon
 		BridgeServer.RegisterHandler( "select_object", new SelectObjectHandler() );
 		BridgeServer.RegisterHandler( "focus_object", new FocusObjectHandler() );
 
-		Log.Info( "[SboxBridge] All Phase 1 + Phase 2 command handlers registered" );
+		// Phase 3.1 — Asset Browser
+		BridgeServer.RegisterHandler( "search_assets", new SearchAssetsHandler() );
+		BridgeServer.RegisterHandler( "list_asset_library", new ListAssetLibraryHandler() );
+		BridgeServer.RegisterHandler( "install_asset", new InstallAssetHandler() );
+		BridgeServer.RegisterHandler( "get_asset_info", new GetAssetInfoHandler() );
+
+		// Phase 3.2 — Materials & Models
+		BridgeServer.RegisterHandler( "assign_model", new AssignModelHandler() );
+		BridgeServer.RegisterHandler( "create_material", new CreateMaterialHandler() );
+		BridgeServer.RegisterHandler( "assign_material", new AssignMaterialHandler() );
+		BridgeServer.RegisterHandler( "set_material_property", new SetMaterialPropertyHandler() );
+
+		// Phase 3.3 — Audio
+		BridgeServer.RegisterHandler( "list_sounds", new ListSoundsHandler() );
+		BridgeServer.RegisterHandler( "create_sound_event", new CreateSoundEventHandler() );
+		BridgeServer.RegisterHandler( "assign_sound", new AssignSoundHandler() );
+		BridgeServer.RegisterHandler( "play_sound_preview", new PlaySoundPreviewHandler() );
+
+		Log.Info( "[SboxBridge] All Phase 1–3 command handlers registered" );
 	}
 }

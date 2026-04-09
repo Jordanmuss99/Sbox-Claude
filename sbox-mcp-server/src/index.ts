@@ -9,6 +9,9 @@ import { registerConsoleTools } from "./tools/console.js";
 import { registerSceneTools } from "./tools/scenes.js";
 import { registerGameObjectTools } from "./tools/gameobjects.js";
 import { registerComponentTools } from "./tools/components.js";
+import { registerAssetTools } from "./tools/assets.js";
+import { registerMaterialTools } from "./tools/materials.js";
+import { registerAudioTools } from "./tools/audio.js";
 
 const server = new McpServer({
   name: "sbox-mcp",
@@ -28,6 +31,9 @@ registerConsoleTools(server, bridge);
 registerSceneTools(server, bridge);
 registerGameObjectTools(server, bridge);
 registerComponentTools(server, bridge);
+registerAssetTools(server, bridge);
+registerMaterialTools(server, bridge);
+registerAudioTools(server, bridge);
 
 // Start the server with stdio transport
 async function main(): Promise<void> {
