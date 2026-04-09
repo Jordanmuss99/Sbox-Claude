@@ -1,0 +1,23 @@
+{
+  "Title": "Claude Bridge",
+  "Type": "library",
+  "Description": "Bridge addon that enables Claude Code to interact with the s&box editor via MCP protocol",
+  "PackageIdent": "sbox-bridge-addon",
+  "Version": "1.0.0",
+
+  "PackageReferences": [],
+
+  "EditorReferences": [
+    "Sandbox.Editor"
+  ],
+
+  "Defines": [],
+
+  "Resources": [
+    "Assets/*"
+  ],
+
+  "CodeFiles": [
+    "Code/**/*.cs"
+  ]
+}

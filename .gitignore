@@ -1,0 +1,18 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# IDE
+.vs/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# s&box build output
+sbox-bridge-addon/bin/
+sbox-bridge-addon/obj/
