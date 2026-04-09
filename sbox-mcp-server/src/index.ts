@@ -26,6 +26,9 @@ import {
 import { BridgeClient } from './BridgeClient.js';
 import { CONSOLE_TOOLS, handleConsoleTool } from './tools/console.js';
 import { GAMEOBJECT_TOOLS, handleGameObjectTool } from './tools/gameobjects.js';
+import { PLAYMODE_TOOLS, handlePlayModeTool } from './tools/playmode.js';
+import { COMPONENT_TOOLS, handleComponentTool } from './tools/components.js';
+import { EDITOR_TOOLS, handleEditorTool } from './tools/editor.js';
 import { STATUS_TOOLS, handleStatusTool } from './tools/status.js';
 
 // ── CLI flags (Task 12) ───────────────────────────────────────────────────────
@@ -63,14 +66,22 @@ ENVIRONMENT VARIABLES
   SBOX_PORT   WebSocket port of the bridge      (default: 8765)
 
 TOOLS EXPOSED
-  get_console_output          Read s&box editor log output
-  create_gameobject           Create a new scene object
-  delete_gameobject           Remove a scene object
-  set_transform               Move/rotate/scale an object
-  get_scene_hierarchy         Inspect the full scene tree
-  get_all_properties          List component properties
-  add_component_with_properties  Add a component and set its fields
-  get_bridge_status           Check connection health and latency
+  get_console_output              Read s&box editor log output
+  create_gameobject               Create a new scene object
+  delete_gameobject               Remove a scene object
+  set_transform                   Move/rotate/scale an object
+  get_scene_hierarchy             Inspect the full scene tree
+  get_all_properties              List component properties
+  add_component_with_properties   Add a component and set its fields
+  set_property                    Write a component property (edit mode)
+  start_play / stop_play          Enter and exit play mode
+  pause_play / resume_play        Pause and resume play mode
+  is_playing                      Query current play-mode state
+  get_runtime_property            Read a property while playing
+  set_runtime_property            Write a property while playing
+  take_screenshot                 Capture the editor viewport
+  undo / redo                     Undo/redo editor actions
+  get_bridge_status               Check connection health and latency
 
 EXAMPLE
   SBOX_HOST=localhost SBOX_PORT=8765 node dist/index.js
@@ -86,7 +97,14 @@ SETUP
 
 // ── All registered MCP tools ──────────────────────────────────────────────────
 
-const allTools: Tool[] = [...CONSOLE_TOOLS, ...GAMEOBJECT_TOOLS, ...STATUS_TOOLS];
+const allTools: Tool[] = [
+  ...CONSOLE_TOOLS,
+  ...GAMEOBJECT_TOOLS,
+  ...PLAYMODE_TOOLS,
+  ...COMPONENT_TOOLS,
+  ...EDITOR_TOOLS,
+  ...STATUS_TOOLS,
+];
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -127,6 +145,12 @@ async function main(): Promise<void> {
         result = await handleConsoleTool(name, toolArgs, bridge);
       } else if (GAMEOBJECT_TOOLS.some((t) => t.name === name)) {
         result = await handleGameObjectTool(name, toolArgs, bridge);
+      } else if (PLAYMODE_TOOLS.some((t) => t.name === name)) {
+        result = await handlePlayModeTool(name, toolArgs, bridge);
+      } else if (COMPONENT_TOOLS.some((t) => t.name === name)) {
+        result = await handleComponentTool(name, toolArgs, bridge);
+      } else if (EDITOR_TOOLS.some((t) => t.name === name)) {
+        result = await handleEditorTool(name, toolArgs, bridge);
       } else if (STATUS_TOOLS.some((t) => t.name === name)) {
         result = await handleStatusTool(name, toolArgs, bridge);
       } else {

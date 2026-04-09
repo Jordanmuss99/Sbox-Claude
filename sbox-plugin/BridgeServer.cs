@@ -65,13 +65,37 @@ public sealed class BridgeServer
     {
         IToolHandler[] handlers =
         [
+            // ── Phase 1: Console ──────────────────────────────────────────
             new GetConsoleOutputHandler(),
+
+            // ── Phase 2: Scene building ───────────────────────────────────
             new CreateGameObjectHandler(),
             new DeleteGameObjectHandler(),
             new SetTransformHandler(),
             new GetSceneHierarchyHandler(),
             new GetAllPropertiesHandler(),
             new AddComponentWithPropertiesHandler(),
+
+            // ── Phase 2 ext: Component properties ────────────────────────
+            new SetPropertyHandler(),
+
+            // ── Phase 4: Play mode ────────────────────────────────────────
+            new StartPlayHandler(),
+            new StopPlayHandler(),
+            new IsPlayingHandler(),
+            new PausePlayHandler(),
+            new ResumePlayHandler(),
+
+            // ── Phase 4: Runtime properties ───────────────────────────────
+            new GetRuntimePropertyHandler(),
+            new SetRuntimePropertyHandler(),
+
+            // ── Phase 4: Editor utilities ─────────────────────────────────
+            new TakeScreenshotHandler(),
+            new UndoHandler(),
+            new RedoHandler(),
+
+            // ── Infrastructure ────────────────────────────────────────────
             new PingHandler(),
         ];
 
@@ -193,7 +217,17 @@ public sealed class BridgeServer
             }
             requestId = idEl.GetString();
 
-            // Validate command
+            // ── Batch request (Task 8) ─────────────────────────────────────
+            // { "id": "...", "commands": [ { "command": "...", "params": {...} }, ... ] }
+            if (root.TryGetProperty("commands", out var commandsEl) &&
+                commandsEl.ValueKind == JsonValueKind.Array)
+            {
+                await ProcessBatchAsync(ws, requestId!, commandsEl, token);
+                return;
+            }
+            // ─────────────────────────────────────────────────────────────
+
+            // Validate command (single request)
             if (!root.TryGetProperty("command", out var cmdEl) ||
                 string.IsNullOrWhiteSpace(cmdEl.GetString()))
             {
@@ -228,6 +262,66 @@ public sealed class BridgeServer
             Log.Error($"[Claude Bridge] Handler error for '{requestId}': {ex}");
             await SendErrorAsync(ws, requestId, "HANDLER_ERROR", ex.Message, token);
         }
+    }
+
+    // ── Batch processing (Task 8) ─────────────────────────────────────────
+
+    /// <summary>
+    /// Process a batch of commands sequentially and return all results in one
+    /// response. Even if one command fails, subsequent commands still execute.
+    /// Response format: { id, results: [ { command, result } | { command, error } ] }
+    /// </summary>
+    private async Task ProcessBatchAsync(
+        WebSocket ws, string id, JsonElement commandsEl, CancellationToken token)
+    {
+        var results = new List<object>();
+
+        foreach (var item in commandsEl.EnumerateArray())
+        {
+            var cmdName = item.TryGetProperty("command", out var cnEl)
+                ? cnEl.GetString()
+                : null;
+
+            if (string.IsNullOrWhiteSpace(cmdName))
+            {
+                results.Add(new
+                {
+                    command = cmdName ?? "(missing)",
+                    error   = new { code = "INVALID_REQUEST", message = "Batch item missing 'command'." },
+                });
+                continue;
+            }
+
+            if (!_handlers.TryGetValue(cmdName, out var handler))
+            {
+                results.Add(new
+                {
+                    command = cmdName,
+                    error   = new { code = "UNKNOWN_COMMAND", message = $"No handler for '{cmdName}'." },
+                });
+                continue;
+            }
+
+            var cmdParams = item.TryGetProperty("params", out var cpEl) ? cpEl : default;
+
+            try
+            {
+                var result = await handler.ExecuteAsync(cmdParams);
+                results.Add(new { command = cmdName, result });
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[Claude Bridge] Batch item '{cmdName}' failed: {ex.Message}");
+                results.Add(new
+                {
+                    command = cmdName,
+                    error   = new { code = "HANDLER_ERROR", message = ex.Message },
+                });
+            }
+        }
+
+        var payload = JsonSerializer.Serialize(new { id, results });
+        await SendRawAsync(ws, payload, token);
     }
 
     // ── Send helpers ──────────────────────────────────────────────────────

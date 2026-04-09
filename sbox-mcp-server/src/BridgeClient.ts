@@ -1,8 +1,9 @@
 /**
  * BridgeClient — WebSocket client for the s&box Claude Bridge plugin.
  *
- * Features (Tasks 7 & 10):
+ * Features:
  *   • Promise-based request/response with per-request timeout
+ *   • sendBatch() — execute multiple commands in one round-trip (Task 8)
  *   • Automatic reconnect after disconnect (configurable delay)
  *   • Periodic ping every 15 s; terminates and reconnects if 3 pings go unanswered
  *   • Rejects all in-flight requests on disconnect
@@ -34,6 +35,21 @@ interface PendingRequest {
 
 interface BridgeResponse {
   id: string;
+  result?: unknown;
+  error?: BridgeError;
+  /** Present on batch responses instead of result */
+  results?: BatchResultItem[];
+}
+
+/** One command in a batch request. */
+export interface BatchCommand {
+  command: string;
+  params?: Record<string, unknown>;
+}
+
+/** One result item in a batch response. */
+export interface BatchResultItem {
+  command: string;
   result?: unknown;
   error?: BridgeError;
 }
@@ -155,6 +171,59 @@ export class BridgeClient extends EventEmitter {
     });
   }
 
+  /**
+   * Send multiple commands to the bridge in one WebSocket round-trip (Task 8).
+   *
+   * Commands are executed sequentially on the C# side. Even if one fails, the
+   * remaining commands still run. Inspect each item's `.error` to check for
+   * per-command failures.
+   *
+   * @example
+   * const [goResult, compResult] = await bridge.sendBatch([
+   *   { command: 'create_gameobject', params: { name: 'Cube' } },
+   *   { command: 'add_component_with_properties', params: { guid: '...', component_type: 'Rigidbody' } },
+   * ]);
+   */
+  async sendBatch(commands: BatchCommand[]): Promise<BatchResultItem[]> {
+    if (!this.connected) {
+      throw new BridgeClientError(
+        'Not connected to the s&box bridge. Is the plugin running?',
+        'NOT_CONNECTED',
+      );
+    }
+
+    if (commands.length === 0) return [];
+
+    const id = uuidv4();
+    const message = JSON.stringify({ id, commands });
+
+    return new Promise<BatchResultItem[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new BridgeClientError(
+            `Batch timed out after ${this.requestTimeout}ms (${commands.length} commands)`,
+            'TIMEOUT',
+          ),
+        );
+      }, this.requestTimeout);
+
+      this.pending.set(id, {
+        resolve: (v) => resolve(v as BatchResultItem[]),
+        reject,
+        timer,
+      });
+
+      this.ws!.send(message, (err?: Error) => {
+        if (err) {
+          clearTimeout(timer);
+          this.pending.delete(id);
+          reject(new BridgeClientError(`Send failed: ${err.message}`, 'SEND_ERROR'));
+        }
+      });
+    });
+  }
+
   // ── Internal ──────────────────────────────────────────────────────────────
 
   private handleMessage(raw: string): void {
@@ -174,6 +243,9 @@ export class BridgeClient extends EventEmitter {
 
     if (response.error) {
       pending.reject(new BridgeClientError(response.error.message, response.error.code));
+    } else if (response.results !== undefined) {
+      // Batch response
+      pending.resolve(response.results);
     } else {
       pending.resolve(response.result);
     }
