@@ -117,6 +117,29 @@ public class BridgeAddon
 		BridgeServer.RegisterHandler( "undo", new UndoHandler() );
 		BridgeServer.RegisterHandler( "redo", new RedoHandler() );
 
-		Log.Info( "[SboxBridge] All Phase 1–4 command handlers registered (53 tools)" );
+		// Phase 5.1 — Prefab System
+		BridgeServer.RegisterHandler( "create_prefab", new CreatePrefabHandler() );
+		BridgeServer.RegisterHandler( "instantiate_prefab", new InstantiatePrefabHandler() );
+		BridgeServer.RegisterHandler( "list_prefabs", new ListPrefabsHandler() );
+		BridgeServer.RegisterHandler( "get_prefab_info", new GetPrefabInfoHandler() );
+
+		// Phase 5.2 — Physics
+		BridgeServer.RegisterHandler( "add_physics", new AddPhysicsHandler() );
+		BridgeServer.RegisterHandler( "add_collider", new AddColliderHandler() );
+		BridgeServer.RegisterHandler( "add_joint", new AddJointHandler() );
+		BridgeServer.RegisterHandler( "raycast", new RaycastHandler() );
+
+		// Phase 5.3 — UI System
+		BridgeServer.RegisterHandler( "create_razor_ui", new CreateRazorUIHandler() );
+		BridgeServer.RegisterHandler( "add_screen_panel", new AddScreenPanelHandler() );
+		BridgeServer.RegisterHandler( "add_world_panel", new AddWorldPanelHandler() );
+
+		// Phase 5.4 — Game Logic Templates
+		BridgeServer.RegisterHandler( "create_player_controller", new CreatePlayerControllerHandler() );
+		BridgeServer.RegisterHandler( "create_npc_controller", new CreateNpcControllerHandler() );
+		BridgeServer.RegisterHandler( "create_game_manager", new CreateGameManagerHandler() );
+		BridgeServer.RegisterHandler( "create_trigger_zone", new CreateTriggerZoneHandler() );
+
+		Log.Info( "[SboxBridge] All Phase 1–5 command handlers registered (68 tools)" );
 	}
 }

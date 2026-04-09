@@ -28,6 +28,10 @@ import { registerMaterialTools } from "./tools/materials.js";
 import { registerAudioTools } from "./tools/audio.js";
 import { registerStatusTools } from "./tools/status.js";
 import { registerPlayModeTools } from "./tools/playmode.js";
+import { registerPrefabTools } from "./tools/prefabs.js";
+import { registerPhysicsTools } from "./tools/physics.js";
+import { registerUITools } from "./tools/ui.js";
+import { registerTemplateTools } from "./tools/templates.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -66,7 +70,7 @@ ENVIRONMENT VARIABLES
 CONNECT TO CLAUDE CODE
   claude mcp add sbox -- node /path/to/sbox-mcp-server/dist/index.js
 
-TOOLS (53 total)
+TOOLS (68 total)
   Project:     get_project_info, list_project_files, read_file, write_file
   Scripts:     create_script, edit_script, delete_script, trigger_hotload
   Console:     get_console_output, get_compile_errors, clear_console
@@ -80,6 +84,10 @@ TOOLS (53 total)
   Play Mode:   start/stop/pause/resume_play, is_playing
   Runtime:     get/set_runtime_property, take_screenshot
   Editor:      undo, redo
+  Prefabs:     create_prefab, instantiate_prefab, list_prefabs, get_prefab_info
+  Physics:     add_physics, add_collider, add_joint, raycast
+  UI:          create_razor_ui, add_screen_panel, add_world_panel
+  Templates:   create_player_controller, create_npc_controller, create_game_manager, create_trigger_zone
   Status:      get_bridge_status
 `);
   process.exit(0);
@@ -109,6 +117,10 @@ registerMaterialTools(server, bridge);
 registerAudioTools(server, bridge);
 registerStatusTools(server, bridge);
 registerPlayModeTools(server, bridge);
+registerPrefabTools(server, bridge);
+registerPhysicsTools(server, bridge);
+registerUITools(server, bridge);
+registerTemplateTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {

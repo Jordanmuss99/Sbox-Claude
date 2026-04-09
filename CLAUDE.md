@@ -2,11 +2,11 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: Phase 4 Complete — Phase 5 Next
+## Status: Phase 5 Complete — Phase 6 Next
 
 **Last updated:** 2026-04-09
-**Current phase:** Phase 4 (Play & Test) ✅ — 53 tools implemented
-**Next up:** Phase 5 (Game Logic Templates) — prefabs, player controllers, AI, UI systems
+**Current phase:** Phase 5 (Game Logic) ✅ — 68 tools implemented
+**Next up:** Phase 6 (Multiplayer) — networking, RPCs, local testing
 
 ---
 
@@ -55,6 +55,10 @@ Sbox-Claude/
 │   │       ├── materials.ts           # assign_model, create_material, assign_material, set_material_property
 │   │       ├── audio.ts              # list_sounds, create_sound_event, assign_sound, play_sound_preview
 │   │       ├── playmode.ts           # play mode control, runtime properties, screenshot, undo/redo, set_property
+│   │       ├── prefabs.ts            # create_prefab, instantiate_prefab, list_prefabs, get_prefab_info
+│   │       ├── physics.ts            # add_physics, add_collider, add_joint, raycast
+│   │       ├── ui.ts                 # create_razor_ui, add_screen_panel, add_world_panel
+│   │       ├── templates.ts          # create_player_controller, create_npc_controller, create_game_manager, create_trigger_zone
 │   │       └── status.ts             # get_bridge_status diagnostic tool
 │   └── dist/                          # Compiled JS (gitignored, built with `npm run build`)
 │
@@ -114,7 +118,22 @@ Sbox-Claude/
             ├── SetPropertyHandler.cs
             ├── RuntimePropertyHandler.cs
             ├── TakeScreenshotHandler.cs
-            └── UndoRedoHandler.cs
+            ├── UndoRedoHandler.cs
+            ├── CreatePrefabHandler.cs
+            ├── InstantiatePrefabHandler.cs
+            ├── ListPrefabsHandler.cs
+            ├── GetPrefabInfoHandler.cs
+            ├── AddPhysicsHandler.cs
+            ├── AddColliderHandler.cs
+            ├── AddJointHandler.cs
+            ├── RaycastHandler.cs
+            ├── CreateRazorUIHandler.cs
+            ├── AddScreenPanelHandler.cs
+            ├── AddWorldPanelHandler.cs
+            ├── CreatePlayerControllerHandler.cs
+            ├── CreateNpcControllerHandler.cs
+            ├── CreateGameManagerHandler.cs
+            └── CreateTriggerZoneHandler.cs
 ```
 
 ---
@@ -194,7 +213,27 @@ Sbox-Claude/
 | `undo` | `tools/playmode.ts` | `UndoRedoHandler.cs` | Undo last editor action |
 | `redo` | `tools/playmode.ts` | `UndoRedoHandler.cs` | Redo last undone action |
 
-### Phase 5–7 — See README.md roadmap
+### Phase 5 — Game Logic (15 tools) ✅
+
+| Tool | MCP File | Bridge Handler | What It Does |
+|------|----------|----------------|-------------|
+| `create_prefab` | `tools/prefabs.ts` | `CreatePrefabHandler.cs` | Save GameObject as reusable .prefab |
+| `instantiate_prefab` | `tools/prefabs.ts` | `InstantiatePrefabHandler.cs` | Spawn prefab instance into scene |
+| `list_prefabs` | `tools/prefabs.ts` | `ListPrefabsHandler.cs` | List all .prefab files in project |
+| `get_prefab_info` | `tools/prefabs.ts` | `GetPrefabInfoHandler.cs` | Read prefab metadata and contents |
+| `add_physics` | `tools/physics.ts` | `AddPhysicsHandler.cs` | Add Rigidbody + collider to object |
+| `add_collider` | `tools/physics.ts` | `AddColliderHandler.cs` | Add specific collider type |
+| `add_joint` | `tools/physics.ts` | `AddJointHandler.cs` | Add physics constraint between objects |
+| `raycast` | `tools/physics.ts` | `RaycastHandler.cs` | Perform physics raycast, return hits |
+| `create_razor_ui` | `tools/ui.ts` | `CreateRazorUIHandler.cs` | Create .razor + .scss UI component |
+| `add_screen_panel` | `tools/ui.ts` | `AddScreenPanelHandler.cs` | Create ScreenPanel for HUD overlay |
+| `add_world_panel` | `tools/ui.ts` | `AddWorldPanelHandler.cs` | Create WorldPanel for in-world 3D UI |
+| `create_player_controller` | `tools/templates.ts` | `CreatePlayerControllerHandler.cs` | Generate FPS/TPS player controller |
+| `create_npc_controller` | `tools/templates.ts` | `CreateNpcControllerHandler.cs` | Generate NPC with NavMesh AI |
+| `create_game_manager` | `tools/templates.ts` | `CreateGameManagerHandler.cs` | Generate game manager with state/score |
+| `create_trigger_zone` | `tools/templates.ts` | `CreateTriggerZoneHandler.cs` | Generate trigger zone with callbacks |
+
+### Phase 6–7 — See README.md roadmap
 
 ---
 

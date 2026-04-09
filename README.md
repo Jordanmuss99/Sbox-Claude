@@ -110,7 +110,7 @@ Add to `~/.claude/claude_desktop_config.json` or your project's `.mcp.json`:
 
 </details>
 
-## Available Tools (53)
+## Available Tools (68)
 
 ### Project & Files
 | Tool | What It Does |
@@ -213,6 +213,37 @@ Add to `~/.claude/claude_desktop_config.json` or your project's `.mcp.json`:
 | `undo` | Undo last editor action |
 | `redo` | Redo last undone action |
 
+### Prefabs
+| Tool | What It Does |
+|------|-------------|
+| `create_prefab` | Save a GameObject as a reusable .prefab file |
+| `instantiate_prefab` | Spawn a prefab instance into the scene |
+| `list_prefabs` | List all .prefab files in the project |
+| `get_prefab_info` | Read prefab metadata and contents |
+
+### Physics
+| Tool | What It Does |
+|------|-------------|
+| `add_physics` | Add Rigidbody + collider to make object dynamic |
+| `add_collider` | Add specific collider type (box, sphere, capsule, mesh, hull) |
+| `add_joint` | Add physics constraint between objects (fixed, spring, slider) |
+| `raycast` | Perform physics raycast and return hit results |
+
+### UI System
+| Tool | What It Does |
+|------|-------------|
+| `create_razor_ui` | Create a Razor UI component (.razor + .scss) with boilerplate |
+| `add_screen_panel` | Create ScreenPanel for full-screen UI overlay (HUD, menus) |
+| `add_world_panel` | Create WorldPanel for in-world 3D UI (health bars, signs) |
+
+### Game Logic Templates
+| Tool | What It Does |
+|------|-------------|
+| `create_player_controller` | Generate FPS/TPS player controller with movement, jumping, camera |
+| `create_npc_controller` | Generate NPC with NavMeshAgent patrol/chase AI |
+| `create_game_manager` | Generate game manager with score, timer, spawning |
+| `create_trigger_zone` | Generate trigger volume with enter/exit callbacks |
+
 ### Diagnostics
 | Tool | What It Does |
 |------|-------------|
@@ -241,7 +272,7 @@ Add to `~/.claude/claude_desktop_config.json` or your project's `.mcp.json`:
 - **Phase 2** ✅ Scene Building — GameObjects, components, hierarchy, selection (15 tools)
 - **Phase 3** ✅ Assets & Resources — asset browser, materials, models, audio (12 tools)
 - **Phase 4** ✅ Play & Test — play mode, runtime debugging, screenshots, undo/redo (11 tools)
-- **Phase 5** 🔲 Game Logic — prefabs, player controllers, AI templates, UI systems
+- **Phase 5** ✅ Game Logic — prefabs, physics, UI system, player/NPC templates (15 tools)
 - **Phase 6** 🔲 Multiplayer — networking, RPCs, local testing
 - **Phase 7** 🔲 Publishing — build, export, Steam Workshop
 
