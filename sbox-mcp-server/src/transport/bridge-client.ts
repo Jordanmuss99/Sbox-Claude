@@ -99,6 +99,8 @@ export class BridgeClient {
                 `Cannot connect to s&box Bridge at ${this.url}. Is s&box running with the Bridge Addon? (${err.message})`
               )
             );
+          } else {
+            console.error(`[sbox-mcp] WebSocket error: ${err.message}`);
           }
         });
       } catch (err) {
@@ -113,7 +115,6 @@ export class BridgeClient {
     timeoutMs = 30000
   ): Promise<BridgeResponse> {
     if (!this.ws || !this.connected) {
-      // Try to reconnect once
       try {
         await this.connect();
       } catch {
@@ -126,8 +127,14 @@ export class BridgeClient {
       }
     }
 
+    // Guard: ensure ws is valid after reconnect
+    if (!this.ws) {
+      return { id: "", success: false, error: "Connection failed" };
+    }
+
     const id = `req_${++this.requestCounter}_${Date.now()}`;
     const request: BridgeRequest = { id, command, params };
+    const ws = this.ws;
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -141,10 +148,10 @@ export class BridgeClient {
 
       this.pendingRequests.set(id, {
         resolve,
-        reject: () => {}, // Errors resolve as failed responses
+        reject: () => {},
         timer,
       });
-      this.ws!.send(JSON.stringify(request));
+      ws.send(JSON.stringify(request));
     });
   }
 
@@ -168,8 +175,13 @@ export class BridgeClient {
       }
     }
 
+    if (!this.ws) {
+      return { id: "", success: false, error: "Connection failed" };
+    }
+
     const id = `batch_${++this.requestCounter}_${Date.now()}`;
     const request = { id, commands };
+    const ws = this.ws;
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -186,7 +198,7 @@ export class BridgeClient {
         reject: () => {},
         timer,
       });
-      this.ws!.send(JSON.stringify(request));
+      ws.send(JSON.stringify(request));
     });
   }
 
@@ -197,14 +209,19 @@ export class BridgeClient {
   async ping(): Promise<number> {
     if (!this.ws || !this.connected) return -1;
 
+    const ws = this.ws;
     const start = Date.now();
     return new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve(-1), 5000);
-      this.ws!.once("pong", () => {
+      const onPong = () => {
         clearTimeout(timeout);
         resolve(Date.now() - start);
-      });
-      this.ws!.ping();
+      };
+      const timeout = setTimeout(() => {
+        ws.removeListener("pong", onPong);
+        resolve(-1);
+      }, 5000);
+      ws.once("pong", onPong);
+      ws.ping();
     });
   }
 
@@ -247,7 +264,7 @@ export class BridgeClient {
       }
 
       this.missedPings++;
-      if (this.missedPings > BridgeClient.MAX_MISSED_PINGS) {
+      if (this.missedPings >= BridgeClient.MAX_MISSED_PINGS) {
         console.error(
           `[sbox-mcp] ${BridgeClient.MAX_MISSED_PINGS} pings unanswered — closing connection`
         );

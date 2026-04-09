@@ -18,6 +18,10 @@ public class CreateScriptHandler : ICommandHandler
 		if ( string.IsNullOrEmpty( projectRoot ) )
 			throw new System.Exception( "No project is currently open" );
 
+		// Ensure trailing separator for safe StartsWith check
+		if ( !projectRoot.EndsWith( Path.DirectorySeparatorChar ) )
+			projectRoot += Path.DirectorySeparatorChar;
+
 		// If raw content is provided, just write it directly
 		if ( parameters.TryGetProperty( "content", out var contentProp ) )
 		{

@@ -24,6 +24,10 @@ public class TakeScreenshotHandler : ICommandHandler
 		if ( string.IsNullOrEmpty( projectRoot ) )
 			throw new Exception( "No project is currently open" );
 
+		// Ensure trailing separator for safe StartsWith check
+		if ( !projectRoot.EndsWith( Path.DirectorySeparatorChar ) )
+			projectRoot += Path.DirectorySeparatorChar;
+
 		var timestamp = DateTime.UtcNow.ToString( "yyyyMMdd_HHmmss" );
 		var defaultPath = $"screenshots/screenshot_{timestamp}.png";
 
