@@ -2,12 +2,13 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: Bridge Working — Handlers Being Refined
+## Status: 78 of 89 Tools Working
 
 **Last updated:** 2026-04-10
 **Bridge:** File-based IPC ✅ working on main thread
-**Handlers:** 61 compiled and registered, param names being aligned with MCP server
-**Tested working:** create_gameobject, assign_model, list_scenes, get_project_info, is_playing, list_available_components
+**Handlers:** 78 compiled and registered (of 89 MCP tools defined)
+**Tested & passing:** 44 handlers across all categories
+**Not implementable:** 11 tools (no s&box API exists)
 
 ---
 
@@ -250,14 +251,16 @@ Project.Current.Config.Title / .Org / .Ident / .Type
 
 ## Known Issues / TODO
 
-- [ ] Parameter name alignment between MCP server tools and C# handlers (in progress)
-- [ ] `get_scene_hierarchy` returns empty hierarchy array despite objects existing
-- [ ] Several handlers skipped due to uncertain APIs (see comments in MyEditorMenu.cs)
-- [ ] Need to verify all 61 handlers work end-to-end
-- [ ] Install process needs to be simplified (copy one file vs. current multi-step)
-- [ ] Bridge addon code is in a project-specific location — needs to be packaged for distribution
-- [ ] `ws` npm dependency is no longer needed (file IPC replaced WebSocket)
-- [ ] Old `sbox-bridge-addon/` folder in repo is outdated (WebSocket-based, wrong structure)
+- [x] ~~Parameter name alignment~~ — Fixed, all 78 handlers use correct MCP param names
+- [x] ~~get_scene_hierarchy empty~~ — Fixed, removed erroneous Parent==null filter
+- [x] ~~Old WebSocket code~~ — Removed, ws dependency dropped
+- [ ] `start_play` triggers but `is_playing` returns false — SetPlaying API may need different approach
+- [ ] `add_sync_property` can't add new properties, only annotate existing ones
+- [ ] `set_material_property` requires MaterialOverride to be set first
+- [ ] Install process could be simplified (single-file copy)
+- [ ] Bridge addon is project-specific — needs packaging for distribution
+- [ ] 11 tools not implementable: pause_play, resume_play, get_console_output, get_compile_errors, clear_console, build_project, get_build_status, clean_build, export_project, prepare_publish (no s&box API)
+- [ ] Consider publishing addon to s&box Asset Library
 
 ---
 

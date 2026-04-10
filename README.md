@@ -66,7 +66,7 @@ In s&box, go to **View → Claude Bridge** to open the dock panel. This is requi
 "Create a new script called EnemyAI with patrol behavior"
 ```
 
-## Available Tools (61 active, 88 defined)
+## Available Tools (78 active, 89 defined)
 
 ### Working & Tested
 | Category | Tools |
@@ -79,17 +79,19 @@ In s&box, go to **View → Claude Bridge** to open the dock panel. This is requi
 | **Components** | `get_property`, `set_property`, `get_all_properties`, `list_available_components`, `add_component_with_properties` |
 | **Play Mode** | `start_play`, `stop_play`, `is_playing`, `get_runtime_property`, `set_runtime_property` |
 | **Assets** | `search_assets`, `get_asset_info`, `assign_model`, `create_material`, `assign_material` |
-| **Audio** | `list_sounds`, `create_sound_event` |
+| **Audio** | `list_sounds`, `create_sound_event`, `assign_sound`, `play_sound_preview` |
 | **Prefabs** | `create_prefab`, `instantiate_prefab`, `list_prefabs`, `get_prefab_info` |
-| **Physics** | `add_physics`, `add_collider`, `raycast` |
+| **Physics** | `add_physics`, `add_collider`, `add_joint`, `raycast` |
+| **Materials** | `set_material_property` |
 | **Templates** | `create_player_controller`, `create_npc_controller`, `create_game_manager`, `create_trigger_zone` |
-| **UI** | `create_razor_ui` |
-| **Networking** | `network_spawn`, `add_sync_property`, `add_rpc_method`, `create_networked_player`, `create_lobby_manager`, `create_network_events` |
-| **Publishing** | `get_project_config`, `set_project_config`, `validate_project`, `set_project_thumbnail` |
+| **UI** | `create_razor_ui`, `add_screen_panel`, `add_world_panel` |
+| **Editor** | `undo`, `redo`, `take_screenshot`, `trigger_hotload` |
+| **Networking** | `network_spawn`, `add_sync_property`, `add_rpc_method`, `create_networked_player`, `create_lobby_manager`, `create_network_events`, `add_network_helper`, `configure_network`, `get_network_status`, `set_ownership` |
+| **Publishing** | `get_project_config`, `set_project_config`, `validate_project`, `set_project_thumbnail`, `get_package_details`, `install_asset`, `list_asset_library` |
 | **Diagnostics** | `get_bridge_status` |
 
-### Not Yet Implemented (API uncertain)
-`pause_play`, `resume_play`, `trigger_hotload`, `get_console_output`, `get_compile_errors`, `clear_console`, `take_screenshot`, `undo`, `redo`, `assign_sound`, `play_sound_preview`, `set_material_property`, `add_joint`, `add_screen_panel`, `add_world_panel`, `add_network_helper`, `configure_network`, `get_network_status`, `set_ownership`, `build_project`, `get_build_status`, `clean_build`, `export_project`, `get_package_details`, `prepare_publish`, `install_asset`, `list_asset_library`
+### Not Implementable (no s&box API exists)
+`pause_play`, `resume_play`, `get_console_output`, `get_compile_errors`, `clear_console`, `build_project`, `get_build_status`, `clean_build`, `export_project`, `prepare_publish`
 
 ## Technical Notes
 
