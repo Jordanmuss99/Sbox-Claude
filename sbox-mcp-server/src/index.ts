@@ -135,6 +135,16 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
+  console.error("");
+  console.error("  ╔═══════════════════════════════════════════════════╗");
+  console.error("  ║  s&box Claude Bridge — MCP Server                ║");
+  console.error("  ║  Build s&box games through conversation          ║");
+  console.error("  ║                                                   ║");
+  console.error("  ║  A project by sboxskins.gg                       ║");
+  console.error("  ║  https://sboxskins.gg                            ║");
+  console.error("  ╚═══════════════════════════════════════════════════╝");
+  console.error("");
+
   // Attempt initial connection to s&box (non-fatal if it fails)
   try {
     await bridge.connect();

@@ -34,7 +34,8 @@
     "type": "git",
     "url": "https://github.com/lousputthole/sbox-claude"
   },
-  "homepage": "https://github.com/lousputthole/sbox-claude#readme",
+  "author": "sboxskins.gg (https://sboxskins.gg)",
+  "homepage": "https://sboxskins.gg",
   "bugs": {
     "url": "https://github.com/lousputthole/sbox-claude/issues"
   },

@@ -113,6 +113,12 @@ cat $env:TEMP\sbox-bridge-ipc\res_test.json
 
 See [CLAUDE.md](CLAUDE.md) for detailed architecture docs, verified APIs, and lessons learned.
 
+## Credits
+
+Built by [sboxskins.gg](https://sboxskins.gg) — the s&box community marketplace.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
+
+Attribution: This project was created by [sboxskins.gg](https://sboxskins.gg). If you use this in your project, please include a link back to https://sboxskins.gg.

@@ -67,6 +67,7 @@ public static class ClaudeBridge
 			_pollTimer = new Timer( ReadRequestFiles, null, 500, 50 );
 
 			Log.Info( $"[SboxBridge] Bridge started — {_handlers.Count} handlers, IPC at {_ipcDir}" );
+			Log.Info( "[SboxBridge] s&box Claude Bridge by sboxskins.gg — https://sboxskins.gg" );
 		}
 		catch ( Exception ex )
 		{
@@ -192,6 +193,8 @@ public static class ClaudeBridge
 
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
+
+	public static int HandlerCount => _handlers.Count;
 
 	static void Register( string name, IBridgeHandler handler )
 	{
@@ -2981,7 +2984,26 @@ public class BridgePoller : Widget
 {
 	public BridgePoller( Widget parent ) : base( parent )
 	{
-		MinimumSize = 64;
+		MinimumSize = new Vector2( 200, 80 );
+		WindowTitle = "Claude Bridge";
+
+		Layout = Layout.Column();
+		Layout.Margin = 8;
+		Layout.Spacing = 4;
+
+		var title = Layout.Add( new Label( "Claude Bridge", this ) );
+		title.SetStyles( "font-size: 14px; font-weight: bold; color: white;" );
+
+		var status = Layout.Add( new Label( $"Handlers: {ClaudeBridge.HandlerCount} | IPC Active", this ) );
+		status.SetStyles( "font-size: 11px; color: #aaa;" );
+
+		Layout.AddSpacingCell( 8 );
+
+		var credit = Layout.Add( new Label( "A project by sboxskins.gg", this ) );
+		credit.SetStyles( "font-size: 11px; color: #4fc3f7;" );
+
+		var url = Layout.Add( new Label( "https://sboxskins.gg", this ) );
+		url.SetStyles( "font-size: 10px; color: #888;" );
 	}
 
 	[EditorEvent.Frame]
