@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "sbox-mcp-server": "dist/index.js",
     "sbox-mcp": "dist/index.js"
   },
   "files": [
