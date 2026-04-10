@@ -836,7 +836,6 @@ public class GetSceneHierarchyHandler : IBridgeHandler
 			return Task.FromResult<object>( new { error = "No active scene" } );
 
 		var roots = scene.Children
-			.Where( go => go.Parent == null )
 			.Select( go => ClaudeBridge.SerializeGoTree( go ) )
 			.ToArray();
 
@@ -1957,7 +1956,9 @@ public class AddSyncPropertyHandler : IBridgeHandler
 	{
 		var rootPath     = Project.Current.GetRootPath();
 		var filePath     = p.GetProperty( "path" ).GetString();
-		var propertyName = p.GetProperty( "property" ).GetString();
+		var propertyName = p.GetProperty( "propertyName" ).GetString();
+		var propertyType = p.TryGetProperty( "propertyType", out var ptProp ) ? ptProp.GetString() ?? "float" : "float";
+		var defaultValue = p.TryGetProperty( "defaultValue", out var dvProp ) ? dvProp.GetString() : null;
 		var fullPath     = Path.GetFullPath( Path.Combine( rootPath, filePath ) );
 
 		if ( !fullPath.StartsWith( rootPath, StringComparison.OrdinalIgnoreCase ) )
@@ -2006,7 +2007,7 @@ public class AddRpcMethodHandler : IBridgeHandler
 	{
 		var rootPath   = Project.Current.GetRootPath();
 		var filePath   = p.GetProperty( "path" ).GetString();
-		var methodName = p.TryGetProperty( "method", out var m ) ? m.GetString() : "MyRpc";
+		var methodName = p.TryGetProperty( "methodName", out var m ) ? m.GetString() : "MyRpc";
 		var rpcType    = p.TryGetProperty( "rpcType", out var rt ) ? rt.GetString() : "Broadcast";
 		var fullPath   = Path.GetFullPath( Path.Combine( rootPath, filePath ) );
 
