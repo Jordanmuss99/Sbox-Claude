@@ -106,6 +106,7 @@ export class BridgeClient {
 
     // Write request file
     const reqPath = path.join(this.ipcDir, `req_${id}.json`);
+    const resPath = path.join(this.ipcDir, `res_${id}.json`);
     try {
       fs.writeFileSync(reqPath, JSON.stringify(request), "utf8");
     } catch (err) {
@@ -117,7 +118,6 @@ export class BridgeClient {
     }
 
     // Poll for response file
-    const resPath = path.join(this.ipcDir, `res_${id}.json`);
     const startTime = Date.now();
 
     return new Promise((resolve) => {
@@ -140,7 +140,8 @@ export class BridgeClient {
         // Check for response file
         if (fs.existsSync(resPath)) {
           try {
-            const responseJson = fs.readFileSync(resPath, "utf8");
+            // Strip UTF-8 BOM that C#'s File.WriteAllText prepends
+            const responseJson = fs.readFileSync(resPath, "utf8").replace(/^\uFEFF/, "");
             const response = JSON.parse(responseJson) as BridgeResponse;
 
             // Clean up response file
@@ -216,7 +217,8 @@ export class BridgeClient {
 
         if (fs.existsSync(resPath)) {
           try {
-            const responseJson = fs.readFileSync(resPath, "utf8");
+            // Strip UTF-8 BOM that C#'s File.WriteAllText prepends
+            const responseJson = fs.readFileSync(resPath, "utf8").replace(/^\uFEFF/, "");
             const response = JSON.parse(responseJson) as BridgeResponse;
             try {
               fs.unlinkSync(resPath);

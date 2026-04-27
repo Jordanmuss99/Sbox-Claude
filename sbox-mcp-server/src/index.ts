@@ -34,6 +34,8 @@ import { registerUITools } from "./tools/ui.js";
 import { registerTemplateTools } from "./tools/templates.js";
 import { registerNetworkingTools } from "./tools/networking.js";
 import { registerPublishingTools } from "./tools/publishing.js";
+import { registerWorldTools } from "./tools/world.js";
+import { registerDiscoveryTools } from "./tools/discovery.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -72,13 +74,13 @@ ENVIRONMENT VARIABLES
 CONNECT TO CLAUDE CODE
   claude mcp add sbox -- node /path/to/sbox-mcp-server/dist/index.js
 
-TOOLS (88 total)
+TOOLS (109 total)
   Project:     get_project_info, list_project_files, read_file, write_file
   Scripts:     create_script, edit_script, delete_script, trigger_hotload
   Console:     get_console_output, get_compile_errors, clear_console
   Scenes:      list_scenes, load_scene, save_scene, create_scene
   GameObjects: create/delete/duplicate/rename_gameobject, set_parent/enabled/transform
-  Components:  get/set_property, get_all_properties, list_available_components, add_component_with_properties
+  Components:  get/set_property, get_all_properties, list_available_components, add_component_with_properties, set_prefab_ref
   Hierarchy:   get_scene_hierarchy, get_selected_objects, select_object, focus_object
   Assets:      search_assets, list_asset_library, install_asset, get_asset_info
   Materials:   assign_model, create_material, assign_material, set_material_property
@@ -94,6 +96,12 @@ TOOLS (88 total)
   Net Scripts: add_sync_property, add_rpc_method, create_networked_player, create_lobby_manager, create_network_events
   Publishing:  get_project_config, set_project_config, validate_project, build_project, get_build_status, clean_build
   Export:      export_project, set_project_thumbnail, get_package_details, prepare_publish
+  World Gen:   invoke_button, list_component_buttons, raycast_terrain, build_terrain_mesh
+  Map Edit:    add_terrain_hill/clearing/trail, clear_terrain_features, sculpt_terrain
+  Caves:       add_cave_waypoint, clear_cave_path
+  Forest:      add_forest_poi/trail, set_forest_seed, clear_forest_pois, paint_forest_density
+  Placement:   place_along_path
+  Discovery:   describe_type, search_types, get_method_signature, find_in_project
   Status:      get_bridge_status
 `);
   process.exit(0);
@@ -129,6 +137,8 @@ registerUITools(server, bridge);
 registerTemplateTools(server, bridge);
 registerNetworkingTools(server, bridge);
 registerPublishingTools(server, bridge);
+registerWorldTools(server, bridge);
+registerDiscoveryTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {

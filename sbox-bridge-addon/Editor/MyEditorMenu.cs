@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -26,6 +27,8 @@ public static class ClaudeBridge
 	private static bool _running;
 	private static string _ipcDir;
 	private static Timer _pollTimer;
+	// UTF-8 without BOM — Node.js JSON.parse rejects the BOM prefix
+	private static readonly Encoding _utf8NoBom = new UTF8Encoding( false );
 
 	static ClaudeBridge()
 	{
@@ -58,7 +61,7 @@ public static class ClaudeBridge
 				running = true,
 				startedAt = DateTime.UtcNow.ToString( "o" ),
 				handlerCount = _handlers.Count
-			} ) );
+			} ), _utf8NoBom );
 
 			_running = true;
 
@@ -113,6 +116,7 @@ public static class ClaudeBridge
 		Register( "get_property",                   new GetPropertyHandler() );
 		Register( "get_all_properties",             new GetAllPropertiesHandler() );
 		Register( "set_property",                   new SetPropertyHandler() );
+		Register( "set_prefab_ref",                 new SetPrefabRefHandler() );
 		Register( "list_available_components",      new ListAvailableComponentsHandler() );
 		Register( "add_component_with_properties",  new AddComponentWithPropertiesHandler() );
 
@@ -191,6 +195,31 @@ public static class ClaudeBridge
 		Register( "take_screenshot",     new TakeScreenshotHandler() );
 		Register( "trigger_hotload",     new TriggerHotloadHandler() );
 
+		// ── Batch 15: Terrain / Map building ────────────────────────────
+		Register( "build_terrain_mesh",       new BuildTerrainMeshHandler() );
+		Register( "invoke_button",            new InvokeButtonHandler() );
+		Register( "list_component_buttons",   new ListComponentButtonsHandler() );
+		Register( "raycast_terrain",          new RaycastTerrainHandler() );
+		Register( "add_terrain_hill",         new AddTerrainHillHandler() );
+		Register( "add_terrain_clearing",     new AddTerrainClearingHandler() );
+		Register( "add_terrain_trail",        new AddTerrainTrailHandler() );
+		Register( "clear_terrain_features",   new ClearTerrainFeaturesHandler() );
+		Register( "add_cave_waypoint",        new AddCaveWaypointHandler() );
+		Register( "clear_cave_path",          new ClearCavePathHandler() );
+		Register( "add_forest_poi",           new AddForestPOIHandler() );
+		Register( "add_forest_trail",         new AddForestTrailHandler() );
+		Register( "set_forest_seed",          new SetForestSeedHandler() );
+		Register( "clear_forest_pois",        new ClearForestPOIsHandler() );
+		Register( "sculpt_terrain",           new SculptTerrainHandler() );
+		Register( "paint_forest_density",     new PaintForestDensityHandler() );
+		Register( "place_along_path",         new PlaceAlongPathHandler() );
+
+		// ── Batch 16: Coding / type discovery ───────────────────────────
+		Register( "describe_type",            new DescribeTypeHandler() );
+		Register( "search_types",             new SearchTypesHandler() );
+		Register( "get_method_signature",     new GetMethodSignatureHandler() );
+		Register( "find_in_project",          new FindInProjectHandler() );
+
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
 
@@ -258,7 +287,7 @@ public static class ClaudeBridge
 			try
 			{
 				var responsePath = Path.Combine( _ipcDir, $"res_{item.responseId}.json" );
-				File.WriteAllText( responsePath, response, Encoding.UTF8 );
+				File.WriteAllText( responsePath, response, _utf8NoBom );
 			}
 			catch ( Exception ex )
 			{
@@ -293,6 +322,58 @@ public static class ClaudeBridge
 					registeredCommands = _handlers.Keys.ToArray()
 				}
 			} );
+		}
+
+		// Set prefab reference (inline — handles GameObject properties that set_property can't)
+		if ( command == "set_prefab_ref" )
+		{
+			try
+			{
+				var sceneRef = SceneEditorSession.Active?.Scene;
+				if ( sceneRef == null )
+					return JsonSerializer.Serialize( new { id, success = false, error = "No active scene" } );
+
+				var paramsEl = root.GetProperty( "params" );
+				var targetIdStr = paramsEl.GetProperty( "id" ).GetString();
+				if ( !Guid.TryParse( targetIdStr, out var targetGuid ) )
+					return JsonSerializer.Serialize( new { id, success = false, error = "Invalid target GUID" } );
+
+				var targetGo = sceneRef.Directory.FindByGuid( targetGuid );
+				if ( targetGo == null )
+					return JsonSerializer.Serialize( new { id, success = false, error = "Target GameObject not found" } );
+
+				var componentType = paramsEl.GetProperty( "component" ).GetString();
+				var propertyName = paramsEl.GetProperty( "property" ).GetString();
+				var prefabPath = paramsEl.GetProperty( "prefabPath" ).GetString();
+
+				var comp = targetGo.Components.GetAll()
+					.FirstOrDefault( c => c.GetType().Name.Equals( componentType, StringComparison.OrdinalIgnoreCase ) );
+				if ( comp == null )
+					return JsonSerializer.Serialize( new { id, success = false, error = $"Component not found: {componentType}" } );
+
+				var prefabFile = ResourceLibrary.Get<PrefabFile>( prefabPath );
+				if ( prefabFile == null )
+					return JsonSerializer.Serialize( new { id, success = false, error = $"Prefab not found: {prefabPath}" } );
+
+				GameObject prefabGo = null;
+				try { prefabGo = SceneUtility.GetPrefabScene( prefabFile ); }
+				catch ( Exception ex ) { return JsonSerializer.Serialize( new { id, success = false, error = $"GetPrefabScene failed: {ex.Message}" } ); }
+
+				if ( prefabGo == null )
+					return JsonSerializer.Serialize( new { id, success = false, error = "Prefab scene is null" } );
+
+				var tDesc = Game.TypeLibrary.GetType( comp.GetType().Name );
+				var prop = tDesc?.Properties.FirstOrDefault( pp => pp.Name == propertyName );
+				if ( prop == null )
+					return JsonSerializer.Serialize( new { id, success = false, error = $"Property not found: {propertyName}" } );
+
+				prop.SetValue( comp, prefabGo );
+				return JsonSerializer.Serialize( new { id, success = true, data = new { wired = propertyName, prefab = prefabPath } } );
+			}
+			catch ( Exception ex )
+			{
+				return MakeError( id, $"set_prefab_ref error: {ex.Message}" );
+			}
 		}
 
 		if ( _handlers.TryGetValue( command, out var handler ) )
@@ -1019,6 +1100,71 @@ public class GetAllPropertiesHandler : IBridgeHandler
 	}
 }
 
+/// <summary>
+/// Sets a GameObject-typed property on a component to a loaded prefab.
+/// Use this when you need to assign a prefab reference that set_property can't handle.
+/// </summary>
+public class SetPrefabRefHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var id = p.GetProperty( "id" ).GetString();
+		if ( !Guid.TryParse( id, out var guid ) )
+			return Task.FromResult<object>( new { error = "Invalid GUID" } );
+
+		var go = scene.Directory.FindByGuid( guid );
+		if ( go == null )
+			return Task.FromResult<object>( new { error = $"GameObject not found: {id}" } );
+
+		var componentType = p.GetProperty( "component" ).GetString();
+		var propertyName = p.GetProperty( "property" ).GetString();
+		var prefabPath = p.GetProperty( "prefabPath" ).GetString();
+
+		var component = go.Components.GetAll()
+			.FirstOrDefault( c => c.GetType().Name.Equals( componentType, StringComparison.OrdinalIgnoreCase ) );
+		if ( component == null )
+			return Task.FromResult<object>( new { error = $"Component not found: {componentType}" } );
+
+		// Load the prefab
+		var prefabFile = ResourceLibrary.Get<PrefabFile>( prefabPath );
+		if ( prefabFile == null )
+			return Task.FromResult<object>( new { error = $"Prefab not found: {prefabPath}" } );
+
+		// Get the GameObject from the prefab scene
+		GameObject prefabGo = null;
+		try
+		{
+			prefabGo = SceneUtility.GetPrefabScene( prefabFile );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = $"Failed to get prefab scene: {ex.Message}" } );
+		}
+
+		if ( prefabGo == null )
+			return Task.FromResult<object>( new { error = "Prefab scene GameObject is null" } );
+
+		try
+		{
+			var typeDesc = Game.TypeLibrary.GetType( component.GetType().Name );
+			var propDesc = typeDesc?.Properties.FirstOrDefault( pp => pp.Name == propertyName );
+			if ( propDesc == null )
+				return Task.FromResult<object>( new { error = $"Property not found: {propertyName}" } );
+
+			propDesc.SetValue( component, prefabGo );
+			return Task.FromResult<object>( new { set = true, id, component = componentType, property = propertyName, prefabPath } );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = $"Failed to set prefab ref: {ex.Message}" } );
+		}
+	}
+}
+
 public class SetPropertyHandler : IBridgeHandler
 {
 	public Task<object> Execute( JsonElement p )
@@ -1158,18 +1304,53 @@ public class AddComponentWithPropertiesHandler : IBridgeHandler
 // BATCH 5 — Play mode
 // ═══════════════════════════════════════════════════════════════════
 
+/// <summary>
+/// Tracks editor play-mode state since Game.IsPlaying isn't reliable in editor context.
+/// </summary>
+public static class PlayState
+{
+	public static bool IsPlaying;
+}
+
 public class StartPlayHandler : IBridgeHandler
 {
 	public Task<object> Execute( JsonElement p )
 	{
+		var session = SceneEditorSession.Active;
+		if ( session == null )
+			return Task.FromResult<object>( new { error = "No active scene session" } );
+
+		// Try the safe path first — matches what the editor Play button does.
+		// This serializes the scene to catch any invalid state before actually playing.
 		try
 		{
-			SceneEditorSession.Active?.SetPlaying( SceneEditorSession.Active.Scene );
-			return Task.FromResult<object>( new { started = true } );
+			EditorScene.Play( session );
+			PlayState.IsPlaying = true;
+			return Task.FromResult<object>( new { started = true, method = "EditorScene.Play" } );
 		}
-		catch ( Exception ex )
+		catch ( Exception editorEx )
 		{
-			return Task.FromResult<object>( new { error = $"Failed to start play: {ex.Message}" } );
+			// Fall back to direct SetPlaying. This skips scene serialization, which
+			// is a workaround but can leave the editor in a half-play state if the
+			// scene has invalid components. Only use if EditorScene.Play fails.
+			try
+			{
+				session.SetPlaying( session.Scene );
+				PlayState.IsPlaying = true;
+				return Task.FromResult<object>( new
+				{
+					started = true,
+					method = "SetPlaying (fallback)",
+					editorErrorSkipped = editorEx.Message
+				} );
+			}
+			catch ( Exception ex )
+			{
+				return Task.FromResult<object>( new
+				{
+					error = $"Failed both paths. Editor: {editorEx.Message} | Direct: {ex.Message}"
+				} );
+			}
 		}
 	}
 }
@@ -1181,6 +1362,7 @@ public class StopPlayHandler : IBridgeHandler
 		try
 		{
 			SceneEditorSession.Active?.StopPlaying();
+			PlayState.IsPlaying = false;
 			return Task.FromResult<object>( new { stopped = true } );
 		}
 		catch ( Exception ex )
@@ -1194,10 +1376,32 @@ public class IsPlayingHandler : IBridgeHandler
 {
 	public Task<object> Execute( JsonElement p )
 	{
+		// Check multiple signals: our tracked flag, Game.IsPlaying, and whether
+		// the active scene is a game scene vs. editor scene.
+		var tracked = PlayState.IsPlaying;
+		var gameFlag = Game.IsPlaying;
+
+		// Editor scene and game scene diverge during play mode
+		bool sessionPlaying = false;
+		try
+		{
+			var session = SceneEditorSession.Active;
+			if ( session != null && Game.ActiveScene != null )
+			{
+				sessionPlaying = Game.ActiveScene != session.Scene;
+			}
+		}
+		catch { }
+
+		var isPlaying = tracked || gameFlag || sessionPlaying;
+
 		return Task.FromResult<object>( new
 		{
-			isPlaying = Game.IsPlaying,
-			isPaused  = Game.IsPaused
+			isPlaying,
+			isPaused = Game.IsPaused,
+			gameFlag,
+			tracked,
+			sessionPlaying
 		} );
 	}
 }
@@ -3010,5 +3214,987 @@ public class BridgePoller : Widget
 	public void OnFrame()
 	{
 		ClaudeBridge.ProcessPendingOnMainThread();
+	}
+}
+
+/// <summary>
+/// Generates a smooth heightmap terrain mesh via MCP.
+/// Params: size (float), resolution (int), hills (array of {x,y,radius,height}),
+///         clearings (array of {x,y,radius}), name (string)
+/// </summary>
+public class BuildTerrainMeshHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var size = p.TryGetProperty( "size", out var sz ) ? sz.GetSingle() : 9600f;
+		var resolution = p.TryGetProperty( "resolution", out var res ) ? res.GetInt32() : 64;
+		var name = p.TryGetProperty( "name", out var nm ) ? nm.GetString() : "Generated Terrain";
+
+		// Parse hills: [{x, y, radius, height}]
+		var hills = new System.Collections.Generic.List<(Vector2 pos, float radius, float height)>();
+		if ( p.TryGetProperty( "hills", out var hillsArr ) && hillsArr.ValueKind == JsonValueKind.Array )
+		{
+			foreach ( var h in hillsArr.EnumerateArray() )
+			{
+				var hx = h.TryGetProperty( "x", out var hxp ) ? hxp.GetSingle() : 0;
+				var hy = h.TryGetProperty( "y", out var hyp ) ? hyp.GetSingle() : 0;
+				var hr = h.TryGetProperty( "radius", out var hrp ) ? hrp.GetSingle() : 500;
+				var hh = h.TryGetProperty( "height", out var hhp ) ? hhp.GetSingle() : 100;
+				hills.Add( (new Vector2( hx, hy ), hr, hh) );
+			}
+		}
+
+		// Parse clearings: [{x, y, radius}]
+		var clearings = new System.Collections.Generic.List<(Vector2 pos, float radius)>();
+		if ( p.TryGetProperty( "clearings", out var clArr ) && clArr.ValueKind == JsonValueKind.Array )
+		{
+			foreach ( var c in clArr.EnumerateArray() )
+			{
+				var cx = c.TryGetProperty( "x", out var cxp ) ? cxp.GetSingle() : 0;
+				var cy = c.TryGetProperty( "y", out var cyp ) ? cyp.GetSingle() : 0;
+				var cr = c.TryGetProperty( "radius", out var crp ) ? crp.GetSingle() : 300;
+				clearings.Add( (new Vector2( cx, cy ), cr) );
+			}
+		}
+
+		var go = scene.CreateObject( true );
+		go.Name = name;
+		go.WorldPosition = Vector3.Zero;
+
+		var mesh = go.AddComponent<MeshComponent>();
+		var polyMesh = mesh.Mesh;
+
+		var halfSize = size * 0.5f;
+		var step = size / resolution;
+		var stride = resolution + 1;
+
+		// Generate heightmap vertices
+		var handles = new HalfEdgeMesh.VertexHandle[stride * stride];
+		for ( int z = 0; z <= resolution; z++ )
+		{
+			for ( int x = 0; x <= resolution; x++ )
+			{
+				var worldX = -halfSize + x * step;
+				var worldY = -halfSize + z * step;
+				var height = CalcHeight( worldX, worldY, hills, clearings );
+				handles[z * stride + x] = polyMesh.AddVertex( new Vector3( worldX, worldY, height ) );
+			}
+		}
+
+		// Generate quad faces
+		int faceCount = 0;
+		for ( int z = 0; z < resolution; z++ )
+		{
+			for ( int x = 0; x < resolution; x++ )
+			{
+				var tl = z * stride + x;
+				var tr = tl + 1;
+				var bl = (z + 1) * stride + x;
+				var br = bl + 1;
+				polyMesh.AddFace( new[] { handles[tl], handles[bl], handles[br], handles[tr] } );
+				faceCount++;
+			}
+		}
+
+		return Task.FromResult<object>( new
+		{
+			built = true,
+			id = go.Id.ToString(),
+			name = go.Name,
+			vertices = handles.Length,
+			faces = faceCount
+		} );
+	}
+
+	private static float CalcHeight( float x, float y,
+		System.Collections.Generic.List<(Vector2 pos, float radius, float height)> hills,
+		System.Collections.Generic.List<(Vector2 pos, float radius)> clearings )
+	{
+		float height = 0f;
+		var pos = new Vector2( x, y );
+
+		// Hills with smooth cosine falloff
+		foreach ( var (hillPos, radius, hillHeight) in hills )
+		{
+			var dist = Vector2.DistanceBetween( pos, hillPos );
+			if ( dist < radius )
+			{
+				var t = dist / radius;
+				var blend = (MathF.Cos( t * MathF.PI ) + 1f) * 0.5f;
+				height += hillHeight * blend;
+			}
+		}
+
+		// Flatten clearings
+		foreach ( var (clearPos, clearRadius) in clearings )
+		{
+			var dist = Vector2.DistanceBetween( pos, clearPos );
+			if ( dist < clearRadius )
+			{
+				var t = dist / clearRadius;
+				var blend = (MathF.Cos( t * MathF.PI ) + 1f) * 0.5f;
+				height = MathX.Lerp( height, 0f, blend );
+			}
+		}
+
+		// Subtle noise
+		var ix = (int)MathF.Floor( x * 0.001f );
+		var iy = (int)MathF.Floor( y * 0.001f );
+		var fx = x * 0.001f - ix;
+		var fy = y * 0.001f - iy;
+		fx = fx * fx * (3f - 2f * fx);
+		fy = fy * fy * (3f - 2f * fy);
+		float Hash( int px, int py ) { var n = px * 127 + py * 311; n = (n << 13) ^ n; return 1f - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824f; }
+		var a = Hash( ix, iy ); var b = Hash( ix + 1, iy ); var c = Hash( ix, iy + 1 ); var d = Hash( ix + 1, iy + 1 );
+		height += MathX.Lerp( MathX.Lerp( a, b, fx ), MathX.Lerp( c, d, fx ), fy ) * 25f;
+
+		return height;
+	}
+}
+
+
+
+// ════════════════════════════════════════════════════════════════════════
+// New handlers — Map editing, sculpt, type discovery (Batch 15 + 16)
+// ════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Shared helpers for world-gen and reflection-driven handlers.
+/// </summary>
+internal static class WorldGenHelpers
+{
+	public static Component FindFirstComponent( string typeName, out string error )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null ) { error = "No active scene"; return null; }
+		foreach ( var go in scene.GetAllObjects( false ) )
+		{
+			foreach ( var comp in go.Components.GetAll() )
+			{
+				if ( comp.GetType().Name == typeName ) { error = null; return comp; }
+			}
+		}
+		error = $"No component of type '{typeName}' found in scene"; return null;
+	}
+
+	public static Component ResolveComponent( JsonElement p, string defaultType, out string error )
+	{
+		string typeName = p.TryGetProperty( "component", out var c ) ? c.GetString() : defaultType;
+		if ( p.TryGetProperty( "id", out var idEl ) && idEl.ValueKind == JsonValueKind.String )
+		{
+			var idStr = idEl.GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) ) { error = "Invalid GameObject GUID"; return null; }
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null ) { error = "No active scene"; return null; }
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null ) { error = "GameObject not found"; return null; }
+			foreach ( var comp in go.Components.GetAll() )
+			{
+				if ( comp.GetType().Name == typeName ) { error = null; return comp; }
+			}
+			error = $"No component '{typeName}' on the given GameObject"; return null;
+		}
+		return FindFirstComponent( typeName, out error );
+	}
+
+	public static System.Collections.IList GetListProperty( Component comp, string propertyName, out string error, out Type elementType )
+	{
+		elementType = null;
+		var prop = comp.GetType().GetProperty( propertyName );
+		if ( prop == null ) { error = $"Property '{propertyName}' not found on {comp.GetType().Name}"; return null; }
+		var val = prop.GetValue( comp );
+		if ( val is System.Collections.IList list )
+		{
+			if ( prop.PropertyType.IsGenericType )
+				elementType = prop.PropertyType.GetGenericArguments()[0];
+			error = null;
+			return list;
+		}
+		error = $"Property '{propertyName}' is not a list"; return null;
+	}
+
+	public static bool InvokeButton( Component comp, string buttonLabel )
+	{
+		var type = comp.GetType();
+		var methods = type.GetMethods( BindingFlags.Public | BindingFlags.Instance );
+
+		// Strategy 1: ButtonAttribute label match
+		foreach ( var method in methods )
+		{
+			if ( method.GetParameters().Length > 0 ) continue;
+			foreach ( var attr in method.GetCustomAttributes( true ) )
+			{
+				if ( !attr.GetType().Name.Contains( "Button" ) ) continue;
+				if ( AttributeStringMatches( attr, buttonLabel ) )
+				{
+					try { method.Invoke( comp, null ); return true; }
+					catch ( Exception ex ) { Log.Warning( $"[InvokeButton] {ex.Message}" ); return false; }
+				}
+			}
+		}
+
+		// Strategy 2: exact method name
+		foreach ( var method in methods )
+		{
+			if ( method.GetParameters().Length > 0 ) continue;
+			if ( method.Name == buttonLabel ) { method.Invoke( comp, null ); return true; }
+		}
+
+		// Strategy 3: case-insensitive, ignore spaces
+		var normalized = buttonLabel.Replace( " ", "" );
+		foreach ( var method in methods )
+		{
+			if ( method.GetParameters().Length > 0 ) continue;
+			if ( string.Equals( method.Name, normalized, StringComparison.OrdinalIgnoreCase ) )
+			{
+				method.Invoke( comp, null );
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private static bool AttributeStringMatches( object attr, string target )
+	{
+		var t = attr.GetType();
+		foreach ( var pi in t.GetProperties() )
+		{
+			if ( pi.PropertyType != typeof( string ) ) continue;
+			try { if ( (pi.GetValue( attr ) as string) == target ) return true; } catch { }
+		}
+		foreach ( var fi in t.GetFields() )
+		{
+			if ( fi.FieldType != typeof( string ) ) continue;
+			try { if ( (fi.GetValue( attr ) as string) == target ) return true; } catch { }
+		}
+		return false;
+	}
+
+	public static List<string> ListButtons( Component comp )
+	{
+		var labels = new List<string>();
+		var type = comp.GetType();
+		foreach ( var method in type.GetMethods( BindingFlags.Public | BindingFlags.Instance ) )
+		{
+			if ( method.GetParameters().Length > 0 ) continue;
+			foreach ( var attr in method.GetCustomAttributes( true ) )
+			{
+				if ( !attr.GetType().Name.Contains( "Button" ) ) continue;
+				var label = ExtractAttributeString( attr ) ?? method.Name;
+				labels.Add( label );
+			}
+		}
+		return labels;
+	}
+
+	private static string ExtractAttributeString( object attr )
+	{
+		var t = attr.GetType();
+		foreach ( var pi in t.GetProperties() )
+		{
+			if ( pi.PropertyType != typeof( string ) ) continue;
+			try { var v = pi.GetValue( attr ) as string; if ( !string.IsNullOrEmpty( v ) ) return v; } catch { }
+		}
+		foreach ( var fi in t.GetFields() )
+		{
+			if ( fi.FieldType != typeof( string ) ) continue;
+			try { var v = fi.GetValue( attr ) as string; if ( !string.IsNullOrEmpty( v ) ) return v; } catch { }
+		}
+		return null;
+	}
+
+	public static void SetMember( object obj, string memberName, object value )
+	{
+		var t = obj.GetType();
+		var prop = t.GetProperty( memberName );
+		if ( prop != null && prop.CanWrite ) { prop.SetValue( obj, ConvertValue( value, prop.PropertyType ) ); return; }
+		var field = t.GetField( memberName );
+		if ( field != null ) { field.SetValue( obj, ConvertValue( value, field.FieldType ) ); }
+	}
+
+	private static object ConvertValue( object value, Type target )
+	{
+		if ( value == null ) return null;
+		if ( target.IsAssignableFrom( value.GetType() ) ) return value;
+		try { return Convert.ChangeType( value, target ); } catch { return value; }
+	}
+}
+
+// ───────── invoke_button ─────────────────────────────────────────────────
+public class InvokeButtonHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var typeName = p.TryGetProperty( "component", out var c ) ? c.GetString() : null;
+		var label = p.TryGetProperty( "button", out var b ) ? b.GetString() : null;
+		if ( string.IsNullOrEmpty( typeName ) || string.IsNullOrEmpty( label ) )
+			return Task.FromResult<object>( new { error = "component and button are required" } );
+
+		var comp = WorldGenHelpers.ResolveComponent( p, typeName, out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		try
+		{
+			var ok = WorldGenHelpers.InvokeButton( comp, label );
+			if ( !ok ) return Task.FromResult<object>( new { error = $"Button '{label}' not found on {typeName}" } );
+			return Task.FromResult<object>( new { invoked = true, component = typeName, button = label } );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = $"Invoke failed: {ex.Message}" } );
+		}
+	}
+}
+
+// ───────── list_component_buttons ────────────────────────────────────────
+public class ListComponentButtonsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var typeName = p.TryGetProperty( "component", out var c ) ? c.GetString() : null;
+		if ( string.IsNullOrEmpty( typeName ) )
+			return Task.FromResult<object>( new { error = "component is required" } );
+
+		var comp = WorldGenHelpers.ResolveComponent( p, typeName, out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var buttons = WorldGenHelpers.ListButtons( comp );
+		return Task.FromResult<object>( new { component = typeName, buttons } );
+	}
+}
+
+// ───────── raycast_terrain ───────────────────────────────────────────────
+public class RaycastTerrainHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+
+		var comp = WorldGenHelpers.ResolveComponent( p, "MapBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		try
+		{
+			var sample = comp.GetType().GetMethod( "SampleHeight" );
+			if ( sample == null ) return Task.FromResult<object>( new { error = "SampleHeight not available on MapBuilder" } );
+			var height = (float)sample.Invoke( comp, new object[] { x, y } );
+			return Task.FromResult<object>( new { x, y, z = height } );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = $"Raycast failed: {ex.Message}" } );
+		}
+	}
+}
+
+// ───────── add_terrain_hill ──────────────────────────────────────────────
+public class AddTerrainHillHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "MapBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+		var radius = p.TryGetProperty( "radius", out var rp ) ? rp.GetSingle() : 500f;
+		var height = p.TryGetProperty( "height", out var hp ) ? hp.GetSingle() : 100f;
+		var rebuild = !p.TryGetProperty( "rebuild", out var rb ) || rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "Hills", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var hill = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( hill, "Position", new Vector2( x, y ) );
+		WorldGenHelpers.SetMember( hill, "Radius", radius );
+		WorldGenHelpers.SetMember( hill, "Height", height );
+		list.Add( hill );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Build Terrain" );
+
+		return Task.FromResult<object>( new { added = true, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── add_terrain_clearing ──────────────────────────────────────────
+public class AddTerrainClearingHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "MapBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+		var radius = p.TryGetProperty( "radius", out var rp ) ? rp.GetSingle() : 300f;
+		var rebuild = !p.TryGetProperty( "rebuild", out var rb ) || rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "Clearings", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var item = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( item, "Position", new Vector2( x, y ) );
+		WorldGenHelpers.SetMember( item, "Radius", radius );
+		list.Add( item );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Build Terrain" );
+		return Task.FromResult<object>( new { added = true, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── add_terrain_trail ─────────────────────────────────────────────
+public class AddTerrainTrailHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "MapBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var fromEl = p.TryGetProperty( "from", out var fp ) ? fp : default;
+		var toEl = p.TryGetProperty( "to", out var tp ) ? tp : default;
+		if ( fromEl.ValueKind != JsonValueKind.Object || toEl.ValueKind != JsonValueKind.Object )
+			return Task.FromResult<object>( new { error = "from and to are required objects with x/y" } );
+
+		var from = new Vector2(
+			fromEl.TryGetProperty( "x", out var fx ) ? fx.GetSingle() : 0f,
+			fromEl.TryGetProperty( "y", out var fy ) ? fy.GetSingle() : 0f );
+		var to = new Vector2(
+			toEl.TryGetProperty( "x", out var tx ) ? tx.GetSingle() : 0f,
+			toEl.TryGetProperty( "y", out var ty ) ? ty.GetSingle() : 0f );
+		var rebuild = !p.TryGetProperty( "rebuild", out var rb ) || rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "Trails", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var item = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( item, "From", from );
+		WorldGenHelpers.SetMember( item, "To", to );
+		list.Add( item );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Build Terrain" );
+		return Task.FromResult<object>( new { added = true, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── clear_terrain_features ────────────────────────────────────────
+public class ClearTerrainFeaturesHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "MapBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var which = p.TryGetProperty( "what", out var w ) ? w.GetString() : "all";
+		var rebuild = !p.TryGetProperty( "rebuild", out var rb ) || rb.GetBoolean();
+
+		var report = new Dictionary<string, int>();
+		string[] targets = which == "all"
+			? new[] { "Hills", "Clearings", "Trails", "CavePath" }
+			: new[] { which };
+
+		foreach ( var prop in targets )
+		{
+			var list = WorldGenHelpers.GetListProperty( comp, prop, out var lerr, out _ );
+			if ( list == null ) continue;
+			report[prop] = list.Count;
+			list.Clear();
+		}
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Build Terrain" );
+		return Task.FromResult<object>( new { cleared = report, rebuilt = rebuild } );
+	}
+}
+
+// ───────── add_cave_waypoint ─────────────────────────────────────────────
+public class AddCaveWaypointHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "CaveBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+		var z = p.TryGetProperty( "z", out var zp ) ? zp.GetSingle() : 0f;
+		var index = p.TryGetProperty( "index", out var ip ) ? ip.GetInt32() : -1;
+		var rebuild = !p.TryGetProperty( "rebuild", out var rb ) || rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "Path", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var item = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( item, "Position", new Vector3( x, y, z ) );
+		if ( index >= 0 && index <= list.Count ) list.Insert( index, item );
+		else list.Add( item );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Build Cave" );
+		return Task.FromResult<object>( new { added = true, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── clear_cave_path ───────────────────────────────────────────────
+public class ClearCavePathHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "CaveBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var list = WorldGenHelpers.GetListProperty( comp, "Path", out var lerr, out _ );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+		var was = list.Count;
+		list.Clear();
+
+		WorldGenHelpers.InvokeButton( comp, "Clear Cave" );
+		return Task.FromResult<object>( new { cleared = was } );
+	}
+}
+
+// ───────── add_forest_poi ────────────────────────────────────────────────
+public class AddForestPOIHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "ForestGenerator", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var name = p.TryGetProperty( "name", out var nm ) ? nm.GetString() : "POI";
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+		var radius = p.TryGetProperty( "radius", out var rp ) ? rp.GetSingle() : 300f;
+		var density = p.TryGetProperty( "density_multiplier", out var dp ) ? dp.GetSingle() : 1f;
+		var rebuild = p.TryGetProperty( "rebuild", out var rb ) && rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "POIs", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var item = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( item, "Name", name );
+		WorldGenHelpers.SetMember( item, "Position", new Vector2( x, y ) );
+		WorldGenHelpers.SetMember( item, "Radius", radius );
+		WorldGenHelpers.SetMember( item, "DensityMultiplier", density );
+		list.Add( item );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Generate Forest" );
+		return Task.FromResult<object>( new { added = true, index = list.Count - 1, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── add_forest_trail ──────────────────────────────────────────────
+public class AddForestTrailHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "ForestGenerator", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var fromIdx = p.TryGetProperty( "from_index", out var f ) ? f.GetInt32() : 0;
+		var toIdx = p.TryGetProperty( "to_index", out var t ) ? t.GetInt32() : 0;
+		var rebuild = p.TryGetProperty( "rebuild", out var rb ) && rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "Trails", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var item = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( item, "FromIndex", fromIdx );
+		WorldGenHelpers.SetMember( item, "ToIndex", toIdx );
+		list.Add( item );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Generate Forest" );
+		return Task.FromResult<object>( new { added = true, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── set_forest_seed ───────────────────────────────────────────────
+public class SetForestSeedHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "ForestGenerator", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var seed = p.TryGetProperty( "seed", out var sp ) ? sp.GetInt32() : 77;
+		var rebuild = !p.TryGetProperty( "rebuild", out var rb ) || rb.GetBoolean();
+
+		var prop = comp.GetType().GetProperty( "Seed" );
+		if ( prop == null ) return Task.FromResult<object>( new { error = "Seed property missing" } );
+		prop.SetValue( comp, seed );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Generate Forest" );
+		return Task.FromResult<object>( new { set = true, seed, rebuilt = rebuild } );
+	}
+}
+
+// ───────── clear_forest_pois ─────────────────────────────────────────────
+public class ClearForestPOIsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "ForestGenerator", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var list = WorldGenHelpers.GetListProperty( comp, "POIs", out var lerr, out _ );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+		var was = list.Count;
+		list.Clear();
+
+		var trailList = WorldGenHelpers.GetListProperty( comp, "Trails", out _, out _ );
+		trailList?.Clear();
+
+		WorldGenHelpers.InvokeButton( comp, "Clear Forest" );
+		return Task.FromResult<object>( new { cleared = was } );
+	}
+}
+
+// ───────── sculpt_terrain ────────────────────────────────────────────────
+public class SculptTerrainHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "MapBuilder", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+		var radius = p.TryGetProperty( "radius", out var rp ) ? rp.GetSingle() : 400f;
+		var strength = p.TryGetProperty( "strength", out var sp ) ? sp.GetSingle() : 50f;
+		var mode = p.TryGetProperty( "mode", out var mp ) ? mp.GetString() : "raise";
+
+		var sculpt = comp.GetType().GetMethod( "Sculpt" );
+		if ( sculpt == null ) return Task.FromResult<object>( new { error = "Sculpt method missing on MapBuilder" } );
+
+		try
+		{
+			var affected = (int)sculpt.Invoke( comp, new object[] { x, y, radius, strength, mode } );
+			return Task.FromResult<object>( new { sculpted = true, mode, affected_vertices = affected } );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = $"Sculpt failed: {ex.Message}" } );
+		}
+	}
+}
+
+// ───────── paint_forest_density ──────────────────────────────────────────
+public class PaintForestDensityHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var comp = WorldGenHelpers.ResolveComponent( p, "ForestGenerator", out var err );
+		if ( comp == null ) return Task.FromResult<object>( new { error = err } );
+
+		var x = p.TryGetProperty( "x", out var xp ) ? xp.GetSingle() : 0f;
+		var y = p.TryGetProperty( "y", out var yp ) ? yp.GetSingle() : 0f;
+		var radius = p.TryGetProperty( "radius", out var rp ) ? rp.GetSingle() : 800f;
+		var density = p.TryGetProperty( "density", out var dp ) ? dp.GetSingle() : 1f;
+		var rebuild = p.TryGetProperty( "rebuild", out var rb ) && rb.GetBoolean();
+
+		var list = WorldGenHelpers.GetListProperty( comp, "DensityRegions", out var lerr, out var et );
+		if ( list == null ) return Task.FromResult<object>( new { error = lerr } );
+
+		var item = Activator.CreateInstance( et );
+		WorldGenHelpers.SetMember( item, "Center", new Vector2( x, y ) );
+		WorldGenHelpers.SetMember( item, "Radius", radius );
+		WorldGenHelpers.SetMember( item, "Density", density );
+		list.Add( item );
+
+		if ( rebuild ) WorldGenHelpers.InvokeButton( comp, "Generate Forest" );
+		return Task.FromResult<object>( new { painted = true, total = list.Count, rebuilt = rebuild } );
+	}
+}
+
+// ───────── place_along_path ──────────────────────────────────────────────
+public class PlaceAlongPathHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null ) return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var modelPath = p.TryGetProperty( "model", out var mp ) ? mp.GetString() : null;
+		if ( string.IsNullOrEmpty( modelPath ) )
+			return Task.FromResult<object>( new { error = "model path is required (e.g. 'models/dev/box.vmdl')" } );
+
+		var spacing = p.TryGetProperty( "spacing", out var sp ) ? sp.GetSingle() : 200f;
+		var jitter = p.TryGetProperty( "jitter", out var jp ) ? jp.GetSingle() : 0f;
+		var minScale = p.TryGetProperty( "min_scale", out var mnp ) ? mnp.GetSingle() : 1f;
+		var maxScale = p.TryGetProperty( "max_scale", out var mxp ) ? mxp.GetSingle() : 1f;
+		var seed = p.TryGetProperty( "seed", out var sdp ) ? sdp.GetInt32() : 42;
+		var name = p.TryGetProperty( "name", out var np ) ? np.GetString() : "PathItem";
+
+		if ( !p.TryGetProperty( "points", out var pointsEl ) || pointsEl.ValueKind != JsonValueKind.Array )
+			return Task.FromResult<object>( new { error = "points must be an array of {x,y,z}" } );
+
+		var points = new List<Vector3>();
+		foreach ( var pt in pointsEl.EnumerateArray() )
+		{
+			points.Add( new Vector3(
+				pt.TryGetProperty( "x", out var px ) ? px.GetSingle() : 0f,
+				pt.TryGetProperty( "y", out var py ) ? py.GetSingle() : 0f,
+				pt.TryGetProperty( "z", out var pz ) ? pz.GetSingle() : 0f ) );
+		}
+		if ( points.Count < 2 ) return Task.FromResult<object>( new { error = "need at least 2 points" } );
+
+		Model model;
+		try { model = Model.Load( modelPath ); }
+		catch ( Exception ex ) { return Task.FromResult<object>( new { error = $"Could not load model '{modelPath}': {ex.Message}" } ); }
+
+		var rng = new Random( seed );
+		var folder = scene.CreateObject( true );
+		folder.Name = $"== {name}s ==";
+
+		int placed = 0;
+		for ( int i = 0; i < points.Count - 1; i++ )
+		{
+			var from = points[i];
+			var to = points[i + 1];
+			var seg = to - from;
+			var len = seg.Length;
+			if ( len < 0.01f ) continue;
+			var dir = seg / len;
+			var steps = Math.Max( 1, (int)(len / spacing) );
+			for ( int s = 0; s <= steps; s++ )
+			{
+				var t = (float)s / steps;
+				var basePos = from + seg * t;
+				var jx = (float)(rng.NextDouble() * 2 - 1) * jitter;
+				var jy = (float)(rng.NextDouble() * 2 - 1) * jitter;
+				var pos = basePos + new Vector3( jx, jy, 0 );
+
+				var go = scene.CreateObject( true );
+				go.Name = $"{name} {++placed}";
+				go.SetParent( folder );
+				go.WorldPosition = pos;
+				go.WorldRotation = Rotation.FromYaw( (float)(rng.NextDouble() * 360.0) );
+				var scale = MathX.Lerp( minScale, maxScale, (float)rng.NextDouble() );
+				go.WorldScale = new Vector3( scale );
+
+				var renderer = go.AddComponent<ModelRenderer>();
+				renderer.Model = model;
+			}
+		}
+
+		return Task.FromResult<object>( new { placed, folder = folder.Id.ToString() } );
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Coding / type discovery handlers (Batch 16)
+// ════════════════════════════════════════════════════════════════════════
+
+// ───────── describe_type ─────────────────────────────────────────────────
+public class DescribeTypeHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var name = p.TryGetProperty( "name", out var n ) ? n.GetString() : null;
+		if ( string.IsNullOrEmpty( name ) ) return Task.FromResult<object>( new { error = "name is required" } );
+
+		var typeDesc = Game.TypeLibrary.GetType( name );
+		Type targetType = typeDesc?.TargetType;
+
+		if ( targetType == null )
+		{
+			foreach ( var asm in AppDomain.CurrentDomain.GetAssemblies() )
+			{
+				try
+				{
+					foreach ( var t in asm.GetTypes() )
+					{
+						if ( t.Name == name || t.FullName == name ) { targetType = t; break; }
+					}
+				}
+				catch { }
+				if ( targetType != null ) break;
+			}
+		}
+
+		if ( targetType == null ) return Task.FromResult<object>( new { error = $"Type '{name}' not found" } );
+
+		var properties = new List<object>();
+		foreach ( var pi in targetType.GetProperties( BindingFlags.Public | BindingFlags.Instance ) )
+		{
+			properties.Add( new
+			{
+				name = pi.Name,
+				type = pi.PropertyType.Name,
+				canRead = pi.CanRead,
+				canWrite = pi.CanWrite
+			} );
+		}
+
+		var methods = new List<object>();
+		foreach ( var m in targetType.GetMethods( BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static ).Take( 80 ) )
+		{
+			if ( m.IsSpecialName ) continue;
+			var pars = string.Join( ", ", m.GetParameters().Select( pp => $"{pp.ParameterType.Name} {pp.Name}" ) );
+			methods.Add( new
+			{
+				name = m.Name,
+				returns = m.ReturnType.Name,
+				signature = $"{m.ReturnType.Name} {m.Name}({pars})",
+				isStatic = m.IsStatic
+			} );
+		}
+
+		var events = targetType.GetEvents( BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static )
+			.Select( e => new { name = e.Name, type = e.EventHandlerType?.Name } ).ToList();
+
+		var attrs = targetType.GetCustomAttributes( false ).Select( a => a.GetType().Name ).ToList();
+
+		return Task.FromResult<object>( new
+		{
+			name = targetType.Name,
+			fullName = targetType.FullName,
+			baseType = targetType.BaseType?.Name,
+			isAbstract = targetType.IsAbstract,
+			isComponent = typeof( Component ).IsAssignableFrom( targetType ),
+			properties,
+			methods,
+			events,
+			attributes = attrs
+		} );
+	}
+}
+
+// ───────── search_types ──────────────────────────────────────────────────
+public class SearchTypesHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var pattern = p.TryGetProperty( "pattern", out var pat ) ? pat.GetString() : "";
+		var ns = p.TryGetProperty( "namespace", out var nsp ) ? nsp.GetString() : null;
+		var componentsOnly = p.TryGetProperty( "components_only", out var co ) && co.GetBoolean();
+		var limit = p.TryGetProperty( "limit", out var lp ) ? lp.GetInt32() : 50;
+
+		var matches = new List<object>();
+		var compType = typeof( Component );
+
+		foreach ( var asm in AppDomain.CurrentDomain.GetAssemblies() )
+		{
+			try
+			{
+				foreach ( var t in asm.GetTypes() )
+				{
+					if ( !t.IsPublic ) continue;
+					if ( componentsOnly && !compType.IsAssignableFrom( t ) ) continue;
+					if ( !string.IsNullOrEmpty( ns ) && (t.Namespace == null || !t.Namespace.Contains( ns, StringComparison.OrdinalIgnoreCase )) ) continue;
+					if ( !string.IsNullOrEmpty( pattern ) && !t.Name.Contains( pattern, StringComparison.OrdinalIgnoreCase ) ) continue;
+
+					matches.Add( new
+					{
+						name = t.Name,
+						fullName = t.FullName,
+						isComponent = compType.IsAssignableFrom( t ),
+						isAbstract = t.IsAbstract
+					} );
+					if ( matches.Count >= limit ) break;
+				}
+			}
+			catch { }
+			if ( matches.Count >= limit ) break;
+		}
+
+		return Task.FromResult<object>( new { count = matches.Count, matches } );
+	}
+}
+
+// ───────── get_method_signature ──────────────────────────────────────────
+public class GetMethodSignatureHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var typeName = p.TryGetProperty( "type", out var tp ) ? tp.GetString() : null;
+		var methodName = p.TryGetProperty( "method", out var mp ) ? mp.GetString() : null;
+		if ( string.IsNullOrEmpty( typeName ) || string.IsNullOrEmpty( methodName ) )
+			return Task.FromResult<object>( new { error = "type and method are required" } );
+
+		Type targetType = Game.TypeLibrary.GetType( typeName )?.TargetType;
+		if ( targetType == null )
+		{
+			foreach ( var asm in AppDomain.CurrentDomain.GetAssemblies() )
+			{
+				try { foreach ( var t in asm.GetTypes() ) if ( t.Name == typeName ) { targetType = t; break; } } catch { }
+				if ( targetType != null ) break;
+			}
+		}
+		if ( targetType == null ) return Task.FromResult<object>( new { error = $"Type '{typeName}' not found" } );
+
+		var overloads = new List<object>();
+		foreach ( var m in targetType.GetMethods( BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static ) )
+		{
+			if ( m.Name != methodName ) continue;
+			var pars = m.GetParameters().Select( par => new { name = par.Name, type = par.ParameterType.Name, hasDefault = par.HasDefaultValue, defaultValue = par.HasDefaultValue ? par.DefaultValue?.ToString() : null } ).ToArray();
+			overloads.Add( new
+			{
+				returns = m.ReturnType.Name,
+				signature = $"{m.ReturnType.Name} {m.Name}({string.Join( ", ", pars.Select( x => $"{x.type} {x.name}" ) )})",
+				parameters = pars,
+				isStatic = m.IsStatic
+			} );
+		}
+
+		if ( overloads.Count == 0 ) return Task.FromResult<object>( new { error = $"Method '{methodName}' not found on '{typeName}'" } );
+		return Task.FromResult<object>( new { type = typeName, method = methodName, overloads } );
+	}
+}
+
+// ───────── find_in_project ───────────────────────────────────────────────
+public class FindInProjectHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var symbol = p.TryGetProperty( "symbol", out var sp ) ? sp.GetString() : null;
+		if ( string.IsNullOrEmpty( symbol ) ) return Task.FromResult<object>( new { error = "symbol is required" } );
+
+		var ext = p.TryGetProperty( "extension", out var ep ) ? ep.GetString() : ".cs";
+		var maxResults = p.TryGetProperty( "max_results", out var mp ) ? mp.GetInt32() : 25;
+
+		var root = Project.Current?.GetRootPath();
+		if ( string.IsNullOrEmpty( root ) || !Directory.Exists( root ) )
+			return Task.FromResult<object>( new { error = "Project root not found" } );
+
+		var hits = new List<object>();
+		try
+		{
+			foreach ( var file in Directory.EnumerateFiles( root, "*" + ext, SearchOption.AllDirectories ) )
+			{
+				if ( hits.Count >= maxResults ) break;
+				if ( file.Contains( $"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}" ) ) continue;
+				if ( file.Contains( $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}" ) ) continue;
+				if ( file.Contains( $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}" ) ) continue;
+
+				try
+				{
+					var lines = File.ReadAllLines( file );
+					for ( int i = 0; i < lines.Length; i++ )
+					{
+						if ( lines[i].Contains( symbol, StringComparison.Ordinal ) )
+						{
+							hits.Add( new
+							{
+								file = file.Substring( root.Length ).TrimStart( Path.DirectorySeparatorChar ),
+								line = i + 1,
+								text = lines[i].Trim()
+							} );
+							if ( hits.Count >= maxResults ) break;
+						}
+					}
+				}
+				catch { }
+			}
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = $"Search failed: {ex.Message}" } );
+		}
+
+		return Task.FromResult<object>( new { symbol, count = hits.Count, results = hits } );
 	}
 }

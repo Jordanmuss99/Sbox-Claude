@@ -66,7 +66,11 @@ In s&box, go to **View → Claude Bridge** to open the dock panel. This is requi
 "Create a new script called EnemyAI with patrol behavior"
 ```
 
-## Available Tools (78 active, 89 defined)
+## Available Tools (109 defined)
+
+> **2026-04-26:** Added 21 tools — generic component-button invocation, map editing (terrain/cave/forest), heightmap sculpt brushes, and type-discovery helpers (Game.TypeLibrary reflection). See `World Gen`, `Map Edit`, `Caves`, `Forest`, `Placement`, and `Discovery` rows below.
+
+
 
 ### Working & Tested
 | Category | Tools |
@@ -88,7 +92,22 @@ In s&box, go to **View → Claude Bridge** to open the dock panel. This is requi
 | **Editor** | `undo`, `redo`, `take_screenshot`, `trigger_hotload` |
 | **Networking** | `network_spawn`, `add_sync_property`, `add_rpc_method`, `create_networked_player`, `create_lobby_manager`, `create_network_events`, `add_network_helper`, `configure_network`, `get_network_status`, `set_ownership` |
 | **Publishing** | `get_project_config`, `set_project_config`, `validate_project`, `set_project_thumbnail`, `get_package_details`, `install_asset`, `list_asset_library` |
+| **Components Extra** | `set_prefab_ref` (assign GameObject prefab to a component property) |
+| **World Gen** | `invoke_button`, `list_component_buttons`, `raycast_terrain`, `build_terrain_mesh` |
+| **Map Edit** | `add_terrain_hill`, `add_terrain_clearing`, `add_terrain_trail`, `clear_terrain_features`, `sculpt_terrain` |
+| **Caves** | `add_cave_waypoint`, `clear_cave_path` |
+| **Forest** | `add_forest_poi`, `add_forest_trail`, `set_forest_seed`, `clear_forest_pois`, `paint_forest_density` |
+| **Placement** | `place_along_path` |
+| **Discovery** | `describe_type`, `search_types`, `get_method_signature`, `find_in_project` |
 | **Diagnostics** | `get_bridge_status` |
+
+### How the World Gen / Map Edit tools work
+
+The `invoke_button` tool is the keystone — it presses any `[Button]` on any component in the scene by attribute label or method name. The map-edit tools (`add_terrain_hill` etc.) build on top: each looks up a target component (default: first `MapBuilder` / `CaveBuilder` / `ForestGenerator` in scene) by reflection, mutates the relevant `[Property] List<>` (e.g. `Hills`, `Path`, `POIs`), and optionally re-invokes the rebuild button.
+
+This means **the tools work on any project** that follows the same component pattern (lists of feature data + a `[Button]` to rebuild). They don't take a hard dependency on the bigfoot game code.
+
+The `Discovery` tools surface `Game.TypeLibrary` reflection so Claude can look up real method signatures, properties, and events instead of guessing API names. Use `describe_type "MeshComponent"` before writing code that touches it.
 
 ### Not Implementable (no s&box API exists)
 `pause_play`, `resume_play`, `get_console_output`, `get_compile_errors`, `clear_console`, `build_project`, `get_build_status`, `clean_build`, `export_project`, `prepare_publish`
@@ -98,6 +117,8 @@ In s&box, go to **View → Claude Bridge** to open the dock panel. This is requi
 - **No WebSocket**: s&box's sandboxed C# doesn't allow `System.Net`. We use file-based IPC instead.
 - **Main thread required**: Scene APIs must run on the editor's main thread. A `[Dock]` widget with `[EditorEvent.Frame]` processes queued requests.
 - **Addon location**: Must be in the project's `Libraries/` folder, NOT the global `addons/` folder.
+- **UTF-8 BOM**: C#'s `Encoding.UTF8` writes a BOM prefix (`EF BB BF`) that breaks Node.js `JSON.parse`. The bridge writes with `new UTF8Encoding(false)` to avoid this, and the MCP server strips any BOM as a safety net.
+- **Dock must be visible**: The `[EditorEvent.Frame]` handler only fires when the Claude Bridge dock widget is open in the editor. If it's closed, no requests will be processed.
 - **API reference**: Download the full type schema from `sbox.game/api` for the definitive API.
 
 ## Development

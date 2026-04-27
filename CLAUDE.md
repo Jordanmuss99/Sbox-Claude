@@ -2,13 +2,23 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: 78 of 89 Tools Working
+## Status: 100 of 109 Tools Implemented
 
-**Last updated:** 2026-04-10
+**Last updated:** 2026-04-26
 **Bridge:** File-based IPC ✅ working on main thread
-**Handlers:** 78 compiled and registered (of 89 MCP tools defined)
-**Tested & passing:** 44 handlers across all categories
-**Not implementable:** 11 tools (no s&box API exists)
+**Handlers:** 100 compiled and registered (of 109 MCP tools defined)
+**Not implementable:** 9 tools (no s&box API exists — see "Known Issues")
+
+### What's new in this update
+
+- **Generic component-button driver** — `invoke_button` + `list_component_buttons` work on any component with a `[Button]` attribute. Plus `set_prefab_ref` for assigning prefab GameObjects to component properties.
+- **Map editing primitives** — `add_terrain_hill`, `add_terrain_clearing`, `add_terrain_trail`, `clear_terrain_features` drive a `MapBuilder` component by mutating its editable `Hills`/`Clearings`/`Trails`/`CavePath` lists and rebuilding.
+- **Sculpt brushes** — `sculpt_terrain` modifies the heightmap directly with raise/lower/flatten/smooth modes.
+- **Cave + forest editing** — `add_cave_waypoint`, `clear_cave_path`, `add_forest_poi`, `add_forest_trail`, `set_forest_seed`, `clear_forest_pois`, `paint_forest_density`.
+- **Path placement** — `place_along_path` drops asset instances along a curve.
+- **Heightmap raycast** — `raycast_terrain` returns surface height at a world XY.
+- **Type discovery** — `describe_type`, `search_types`, `get_method_signature`, `find_in_project` expose `Game.TypeLibrary` reflection so Claude can look up real APIs instead of guessing.
+- **Better play-mode tracking** — `start_play` uses `EditorScene.Play` with `SetPlaying` fallback; `is_playing` tracks state via `PlayState` static + Game flag + active-scene divergence (fixes the prior "start_play triggers but is_playing returns false" issue).
 
 ---
 
@@ -73,14 +83,19 @@ Two components:
 - `MeshCollider` does NOT exist — use `HullCollider` instead
 - `Rotation.Pitch()`, `.Yaw()`, `.Roll()` are methods, not properties
 
-### Math & Events (learned during Sasquatched development)
+### Math & Events (s&box sandbox specifics)
 - `MathX.Clamp(value, min, max)` — NOT `System.Math` or `MathF` (neither exists in s&box sandbox)
 - `System.MathF` does NOT exist in s&box's C# sandbox
 - `IGameEvent` / `GameObject.Dispatch()` / `Scene.Dispatch()` are from `facepunch.libevents` package, NOT base s&box
-- If not using libevents, use a static `GameEventBus` pattern with `Action<T>` delegates
 - `Networking.MaxPlayers` is **read-only** — set via lobby config, not direct assignment
 - `Networking.IsHost` may throw if networking is not active — guard with try/catch or check `Networking.IsActive` first
-- Components that reference `Networking.*` in `OnUpdate` can crash the bridge if networking isn't initialized
+
+### UTF-8 BOM (Critical IPC Bug — Fixed)
+- C#'s `Encoding.UTF8` writes a BOM prefix (`EF BB BF`) at the start of files
+- Node.js `JSON.parse` rejects the BOM: `Unexpected token '﻿'` — but the `catch` block in the polling loop swallowed this silently, causing every response to time out
+- **Bridge fix**: Use `new UTF8Encoding(false)` for all IPC file writes (status.json, res_*.json)
+- **MCP server fix**: Strip BOM with `.replace(/^\uFEFF/, "")` before `JSON.parse` as a safety net
+- Both fixes are applied — belt and suspenders
 
 ### Bridge Behavior Notes
 - Bridge processes **one request per editor frame** — sending many requests rapidly causes some to be consumed without response
@@ -271,13 +286,14 @@ Project.Current.Config.Title / .Org / .Ident / .Type
 - [x] ~~Parameter name alignment~~ — Fixed, all 78 handlers use correct MCP param names
 - [x] ~~get_scene_hierarchy empty~~ — Fixed, removed erroneous Parent==null filter
 - [x] ~~Old WebSocket code~~ — Removed, ws dependency dropped
-- [ ] `start_play` triggers but `is_playing` returns false — SetPlaying API may need different approach
+- [x] ~~`start_play` triggers but `is_playing` returns false~~ — Fixed via `EditorScene.Play` + manual `PlayState` tracking
 - [ ] `add_sync_property` can't add new properties, only annotate existing ones
 - [ ] `set_material_property` requires MaterialOverride to be set first
 - [ ] Install process could be simplified (single-file copy)
 - [ ] Bridge addon is project-specific — needs packaging for distribution
-- [ ] 11 tools not implementable: pause_play, resume_play, get_console_output, get_compile_errors, clear_console, build_project, get_build_status, clean_build, export_project, prepare_publish (no s&box API)
+- [ ] 9 tools not implementable: pause_play, resume_play, get_console_output, get_compile_errors, clear_console, build_project, get_build_status, clean_build, prepare_publish (no s&box API)
 - [ ] Consider publishing addon to s&box Asset Library
+- [ ] Map-edit tools assume the project has `MapBuilder`/`CaveBuilder`/`ForestGenerator`-shaped components. `invoke_button` works on any project; the named convenience tools require those components or compatible ones.
 
 ---
 
