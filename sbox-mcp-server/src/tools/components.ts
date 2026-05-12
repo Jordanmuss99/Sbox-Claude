@@ -6,8 +6,13 @@ import { BridgeClient } from "../transport/bridge-client.js";
  * Component inspection and manipulation tools.
  *
  * Registers: get_property, get_all_properties, list_available_components,
- * add_component_with_properties. These tools read/write component data on
- * GameObjects and discover available component types (both built-in and custom).
+ * add_component_with_properties, component_list, component_remove. These tools
+ * read/write component data on GameObjects, discover available component types
+ * (both built-in and custom), and enumerate / destroy components on a GO.
+ *
+ * S7 (2026-05-12) added component_list + component_remove — see
+ * MyEditorMenu.cs ComponentListHandler / ComponentRemoveHandler for the
+ * C# side. Both are JTC-parity tools (matrix.v2 MISSING bucket).
  */
 export function registerComponentTools(
   server: McpServer,
@@ -97,6 +102,45 @@ export function registerComponentTools(
     },
     async (params) => {
       const res = await bridge.send("add_component_with_properties", params);
+      if (!res.success) {
+        return { content: [{ type: "text", text: `Error: ${res.error}` }] };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }],
+      };
+    }
+  );
+
+  // ── component_list ───────────────────────────────────────────────
+  server.tool(
+    "component_list",
+    "List all components on a GameObject. Returns each component's type name, full name, and enabled state.",
+    {
+      id: z.string().describe("GUID of the GameObject"),
+    },
+    async (params) => {
+      const res = await bridge.send("component_list", params);
+      if (!res.success) {
+        return { content: [{ type: "text", text: `Error: ${res.error}` }] };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }],
+      };
+    }
+  );
+
+  // ── component_remove ─────────────────────────────────────────────
+  server.tool(
+    "component_remove",
+    "Remove a component from a GameObject by type name. Returns removed=true with count of destroyed instances, or removed=false if the GameObject had no component of that type.",
+    {
+      id: z.string().describe("GUID of the GameObject"),
+      component: z
+        .string()
+        .describe("Component type name to remove (e.g. 'ModelRenderer'). Resolved via Game.TypeLibrary."),
+    },
+    async (params) => {
+      const res = await bridge.send("component_remove", params);
       if (!res.success) {
         return { content: [{ type: "text", text: `Error: ${res.error}` }] };
       }

@@ -3,6 +3,49 @@ import * as path from "path";
 import * as os from "os";
 
 /**
+ * Resolve the IPC dir by probing where the .NET bridge actually writes status.json.
+ *
+ * On Windows, `Path.GetTempPath()` follows TMP > TEMP > USERPROFILE\AppData\Local\Temp.
+ * The Node side used to do the same via `os.tmpdir()`, but that prefers TEMP first,
+ * and parent processes (opencode, Claude Code, VS Code) sometimes override only ONE
+ * of TMP/TEMP or override BOTH to a sandboxed scratch dir. Either way, env-based
+ * resolution alone can land on a temp dir that has no bridge.
+ *
+ * Strategy: build the candidate list in .NET's priority order, and probe each for
+ * `sbox-bridge-ipc/status.json`. Return whichever has it. Falls back to TMP-first
+ * order when none have status.json (so a freshly-started client still picks a sane
+ * dir for the addon to write into).
+ *
+ * Honors an explicit `SBOX_BRIDGE_IPC_DIR` override for the rare case where the user
+ * runs the addon out of a non-standard location.
+ */
+function getNetCompatibleTempPath(): string {
+  // Explicit override: caller provides the FULL ipcDir (we strip the trailing
+  // "sbox-bridge-ipc" so the constructor can re-append it uniformly).
+  if (process.env.SBOX_BRIDGE_IPC_DIR) {
+    const override = process.env.SBOX_BRIDGE_IPC_DIR;
+    return path.basename(override) === "sbox-bridge-ipc"
+      ? path.dirname(override)
+      : override;
+  }
+
+  if (process.platform !== "win32") return os.tmpdir();
+
+  const candidates = [
+    process.env.TMP,
+    process.env.TEMP,
+    path.join(os.homedir(), "AppData", "Local", "Temp"),
+  ].filter((p): p is string => !!p);
+
+  for (const dir of candidates) {
+    const status = path.join(dir, "sbox-bridge-ipc", "status.json");
+    if (fs.existsSync(status)) return dir;
+  }
+
+  return candidates[0] ?? os.tmpdir();
+}
+
+/**
  * File-based IPC transport for communicating with the s&box Bridge Addon.
  *
  * Instead of WebSocket, this uses a shared temp directory where:
@@ -43,8 +86,8 @@ export class BridgeClient {
   constructor(host = "127.0.0.1", port = 29015) {
     this.host = host;
     this.port = port;
-    this.ipcDir = path.join(os.tmpdir(), "sbox-bridge-ipc");
-  }
+    this.ipcDir = path.join(getNetCompatibleTempPath(), "sbox-bridge-ipc");
+}
 
   /**
    * Check if the s&box Bridge is running by looking for the status file.

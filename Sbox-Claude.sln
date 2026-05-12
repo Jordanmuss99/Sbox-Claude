@@ -1,0 +1,32 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "sbox-bridge-addon", "sbox-bridge-addon", "{5F064F98-9FB5-3F74-6182-63E9529B5547}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Editor", "Editor", "{8FDE8931-60D9-8DD7-0059-88A7B2B09F8A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "claudebridge.editor", "sbox-bridge-addon\Editor\claudebridge.editor.csproj", "{FC43CD00-E466-CAC2-ED3E-B3A39C9864A9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FC43CD00-E466-CAC2-ED3E-B3A39C9864A9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FC43CD00-E466-CAC2-ED3E-B3A39C9864A9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FC43CD00-E466-CAC2-ED3E-B3A39C9864A9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FC43CD00-E466-CAC2-ED3E-B3A39C9864A9}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{8FDE8931-60D9-8DD7-0059-88A7B2B09F8A} = {5F064F98-9FB5-3F74-6182-63E9529B5547}
+		{FC43CD00-E466-CAC2-ED3E-B3A39C9864A9} = {8FDE8931-60D9-8DD7-0059-88A7B2B09F8A}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9A40EE17-AE26-4A96-BBBD-082BA905C61E}
+	EndGlobalSection
+EndGlobal

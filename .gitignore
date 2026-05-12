@@ -18,3 +18,6 @@ sbox-bridge-addon/bin/
 sbox-bridge-addon/obj/
 sbox-mcp-server/package-lock.json
 /.sisyphus
+/.omc
+AGENTS.md
+CLAUDE.md

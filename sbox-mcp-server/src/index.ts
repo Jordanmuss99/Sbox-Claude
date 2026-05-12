@@ -4,7 +4,7 @@
  * Entry point for the sbox-mcp MCP server.
  *
  * Creates an MCP server (stdio transport), connects to the s&box Bridge Addon
- * via WebSocket, and registers all tool handlers. Each tool domain (project,
+ * via file IPC, and registers all tool handlers. Each tool domain (project,
  * scripts, console, scenes, etc.) has its own register function in src/tools/.
  *
  * CLI flags: --version / -v, --help / -h
@@ -36,6 +36,9 @@ import { registerNetworkingTools } from "./tools/networking.js";
 import { registerPublishingTools } from "./tools/publishing.js";
 import { registerWorldTools } from "./tools/world.js";
 import { registerDiscoveryTools } from "./tools/discovery.js";
+import { registerTagTools } from "./tools/tags.js";
+import { registerSceneSearchTools } from "./tools/scene-search.js";
+import { registerJtcAliasTools } from "./tools/jtc-aliases.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -68,8 +71,9 @@ USAGE
   node dist/index.js --version    Show version
 
 ENVIRONMENT VARIABLES
-  SBOX_BRIDGE_HOST    Bridge WebSocket host (default: 127.0.0.1)
-  SBOX_BRIDGE_PORT    Bridge WebSocket port (default: 29015)
+  SBOX_BRIDGE_HOST    Bridge host (legacy — file IPC is the active transport; default: 127.0.0.1)
+  SBOX_BRIDGE_PORT    Bridge port (legacy — file IPC is the active transport; default: 29015)
+  SBOX_BRIDGE_IPC_DIR Override the auto-probed IPC directory (default: <temp>/sbox-bridge-ipc)
 
 CONNECT TO CLAUDE CODE
   claude mcp add sbox -- node /path/to/sbox-mcp-server/dist/index.js
@@ -113,7 +117,7 @@ const server = new McpServer({
   version: getVersion(),
 });
 
-// Bridge client connects to s&box editor via WebSocket
+// Bridge client connects to s&box editor via file IPC (see transport/bridge-client.ts)
 const bridge = new BridgeClient(
   process.env.SBOX_BRIDGE_HOST ?? "127.0.0.1",
   parseInt(process.env.SBOX_BRIDGE_PORT ?? "29015", 10)
@@ -139,6 +143,9 @@ registerNetworkingTools(server, bridge);
 registerPublishingTools(server, bridge);
 registerWorldTools(server, bridge);
 registerDiscoveryTools(server, bridge);
+registerTagTools(server, bridge);
+registerSceneSearchTools(server, bridge);
+registerJtcAliasTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {

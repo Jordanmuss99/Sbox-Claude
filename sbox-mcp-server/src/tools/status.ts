@@ -15,6 +15,12 @@ export function registerStatusTools(
     "Check the connection status to the s&box Bridge — whether it's connected, latency, host/port, and editor info. Useful for debugging",
     {},
     async () => {
+      // Cold-start probe: attempt a connection so a fresh `get_bridge_status` call
+      // accurately reflects reachability. `connect()` is idempotent and silently
+      // no-ops when already connected; on failure the catch leaves `connected=false`.
+      if (!bridge.isConnected()) {
+        try { await bridge.connect(); } catch { /* leave disconnected */ }
+      }
       const connected = bridge.isConnected();
       let latencyMs = -1;
       let editorVersion: string | null = null;

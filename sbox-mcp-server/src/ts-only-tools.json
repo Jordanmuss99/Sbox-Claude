@@ -1,0 +1,16 @@
+{
+  "_doc": "TS-only tool allowlist — tools registered in src/tools/*.ts that have NO C# handler in sbox-bridge-addon. These are local TS operations (build, shell, in-proc state, bridge meta). Updating this list requires reviewer sign-off and a matching entry in CLAUDE.md migration table.",
+  "tools": [
+    "build_project",
+    "clean_build",
+    "clear_console",
+    "export_project",
+    "get_bridge_status",
+    "get_build_status",
+    "get_compile_errors",
+    "get_console_output",
+    "pause_play",
+    "prepare_publish",
+    "resume_play"
+  ]
+}

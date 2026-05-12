@@ -2,6 +2,47 @@
 
 All notable changes to the s&box Claude Bridge.
 
+## [Unreleased]
+
+**JTC parity sprints (B.2): 8 new canonical tools + 26 JTC-compat aliases. Coverage of JTC `sbox-mcp` tool surface: 34/48 (70.8%).**
+
+### Added — Tag management (S5)
+
+- `tag_add` / `tag_list` / `tag_remove` — operate on `GameObject.Tags`. Idempotent: `tag_add` reports `alreadyHad=true` if the tag was present; `tag_remove` reports `removed=false` if it wasn't.
+
+### Added — Scene search (S6)
+
+- `scene_find_by_tag` — active-scene lookup via `Scene.FindAllWithTag`.
+- `scene_find_by_component` — enumerate all GameObjects that have a given component type (resolved via `Game.TypeLibrary`).
+- `scene_find_objects` — glob-pattern name search (`*` wildcards, case-insensitive). Walks `Scene.GetAllObjects(recursive=true)`.
+
+### Added — Component lifecycle (S7)
+
+- `component_list` — enumerate components on a GameObject. Returns each component's type name, full name, and enabled state.
+- `component_remove` — destroy a component on a GameObject by type name. Idempotent: returns `removed=false` if no component of that type was present.
+
+### Added — JTC compatibility aliases
+
+- 26 `JTC_ALIASES` registered — every alias prints a one-shot console warning naming the canonical Lou tool, then forwards transparently. Coverage includes `editor_*` (undo / redo / save_scene / take_screenshot / play / stop / is_playing / select_object / get_selection / scene_info / console_output), `file_*` (list / read / write), `scene_*` (clone / create / delete / get_hierarchy / load / reparent / set_transform), `project_info`, `asset_mount`, `asset_search`, `component_add`, `component_set`, and `sbox_search_api`.
+- 1 `LOU_RENAMES` entry: `install_asset` → `asset_install_pinned` (the canonical was renamed in B.1.11 for clarity).
+
+### Added — Parity test infrastructure
+
+- `test/parity.test.ts` — 22 assertions enforcing the TS-tool ↔ C#-handler contract via regex scan of source. Includes inventory snapshot, alias-integrity, no-collision, and no-chain checks.
+- `test/aliases.test.ts` — 9 assertions covering `registerAlias` dispatch (forwarding to canonical, one-shot warning, kind-specific warning text).
+- `src/ts-only-tools.json` — reviewer-gated allowlist of canonical TS tools with no C# handler.
+- `scripts/smoke-aliases.mjs` — live MCP JSON-RPC smoke against the built server (alias dispatch + handler reachability).
+
+### Tool Count
+
+| | Before | After |
+|---|---|---|
+| Canonical TS tools | 111 | **119** |
+| C# handlers | 100 | **108** |
+| JTC-compat aliases | 0 | **26** |
+| Lou-rename aliases | 0 | **1** |
+| Runtime-registered total | 111 | **146** |
+
 ## [1.1.0] — 2026-04-27
 
 **21 new tools, 109 total. Major focus: world editing and code discovery.**

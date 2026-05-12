@@ -7,6 +7,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -46,9 +48,30 @@ public static class ClaudeBridge
 		EditorUtility.DisplayDialog( "Claude Bridge", msg );
 	}
 
+	[Menu( "Editor", "Claude Bridge/Restart", "refresh" )]
+	public static void RestartBridge()
+	{
+		Log.Info( "[SboxBridge] Manual restart triggered via menu" );
+		StartBridge();
+		EditorUtility.DisplayDialog( "Claude Bridge", $"Restarted.\nIPC: {_ipcDir}\nHandlers: {_handlers.Count}" );
+	}
+
+	[EditorEvent.Hotload]
+	public static void OnHotload()
+	{
+		Log.Info( "[SboxBridge] Hotload detected — restarting bridge..." );
+		StartBridge();
+	}
+
 	static void StartBridge()
 	{
-		if ( _running ) return;
+		// Always dispose any prior Timer first — handles hotload where static refs
+		// may survive but the Timer's callback is JIT'd into an unloaded assembly.
+		// Removing the historic `if (_running) return;` early-out fixes the
+		// "bridge reports Running but Timer dead" zombie state.
+		try { _pollTimer?.Dispose(); } catch { }
+		_pollTimer = null;
+		_running = false;
 
 		try
 		{
@@ -187,7 +210,7 @@ public static class ClaudeBridge
 		Register( "validate_project",    new ValidateProjectHandler() );
 		Register( "set_project_thumbnail",new SetProjectThumbnailHandler() );
 		Register( "get_package_details", new GetPackageDetailsHandler() );
-		Register( "install_asset",       new InstallAssetHandler() );
+		Register( "asset_install_pinned", new AssetInstallPinnedHandler() );
 		Register( "list_asset_library",  new ListAssetLibraryHandler() );
 
 		// ── Batch 14: Console / diagnostics ─────────────────────────────
@@ -219,6 +242,20 @@ public static class ClaudeBridge
 		Register( "search_types",             new SearchTypesHandler() );
 		Register( "get_method_signature",     new GetMethodSignatureHandler() );
 		Register( "find_in_project",          new FindInProjectHandler() );
+
+		// ── Tag management (S5, 2026-05-12) ─────────────────────────
+		Register( "tag_add",                  new TagAddHandler() );
+		Register( "tag_list",                 new TagListHandler() );
+		Register( "tag_remove",               new TagRemoveHandler() );
+
+		// ── Scene search (S6, 2026-05-12) ─────────────────────────
+		Register( "scene_find_by_tag",        new SceneFindByTagHandler() );
+		Register( "scene_find_by_component",  new SceneFindByComponentHandler() );
+		Register( "scene_find_objects",       new SceneFindObjectsHandler() );
+
+		// ── Component lifecycle (S7, 2026-05-12) ──────────────────
+		Register( "component_list",           new ComponentListHandler() );
+		Register( "component_remove",         new ComponentRemoveHandler() );
 
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
@@ -3084,31 +3121,135 @@ public class GetPackageDetailsHandler : IBridgeHandler
 	}
 }
 
-public class InstallAssetHandler : IBridgeHandler
+public class AssetInstallPinnedHandler : IBridgeHandler
 {
+	// Implements B.1.3 (pin to PackageReferences), B.1.9 (idempotency on both
+	// AssetSystem and PackageReferences), B.1.10 (persist via direct .sbproj
+	// JSON mutation — EditorUtility.SaveProjectSettings<T> requires T:ConfigData
+	// which Sandbox.DataModel.ProjectConfig does NOT satisfy, so we follow Lou's
+	// SetProjectConfigHandler pattern of direct file mutation), and B.1.14
+	// (downloaded: bool | "unknown" honesty on InstallAsync exception paths).
+	// See `.omc/specs/gate1-decisions.md` for the binding contract.
 	public async Task<object> Execute( JsonElement p )
 	{
 		var ident = p.GetProperty( "ident" ).GetString();
+		if ( string.IsNullOrWhiteSpace( ident ) )
+			return new { error = "ident is required" };
+
+		object downloaded;
+		string assetName = null;
+		string assetPath = null;
+		string assetRelative = null;
 
 		try
 		{
-			var asset = await AssetSystem.InstallAsync( ident, true );
-			if ( asset == null )
-				return new { error = $"Failed to install asset: {ident}" };
-
-			return new
+			// B.1.9: skip InstallAsync if asset is already cloud-installed
+			if ( AssetSystem.IsCloudInstalled( ident ) )
 			{
-				installed     = true,
-				ident,
-				name          = asset.Name,
-				path          = asset.Path,
-				relativePath  = asset.RelativePath
-			};
+				downloaded = false;
+			}
+			else
+			{
+				var asset = await AssetSystem.InstallAsync( ident, true );
+				downloaded = true;
+				if ( asset == null )
+					return new { error = $"InstallAsync returned null for: {ident}", downloaded };
+				assetName = asset.Name;
+				assetPath = asset.Path;
+				assetRelative = asset.RelativePath;
+			}
 		}
 		catch ( Exception ex )
 		{
-			return new { error = $"Failed to install asset: {ex.Message}" };
+			// B.1.14: honest "unknown" when InstallAsync throws
+			return new
+			{
+				error = $"Failed to install asset: {ex.Message}",
+				downloaded = "unknown"
+			};
 		}
+
+		// B.1.3 + B.1.10: pin into ProjectConfig.PackageReferences per D4.
+		// Persistence: direct .sbproj JSON mutation via System.Text.Json.Nodes
+		// (mirrors SetProjectConfigHandler at L2504). The runtime mount already
+		// happened via AssetSystem.InstallAsync; this step makes it survive reload.
+		bool pinned = false;
+		bool alreadyPinned = false;
+		string pinError = null;
+		try
+		{
+			var rootPath = Project.Current.GetRootPath();
+			var sbproj = Directory.GetFiles( rootPath, "*.sbproj", SearchOption.TopDirectoryOnly ).FirstOrDefault();
+			if ( sbproj == null )
+			{
+				pinError = ".sbproj file not found in project root";
+			}
+			else
+			{
+				var rootNode = JsonNode.Parse( File.ReadAllText( sbproj ) ) as JsonObject;
+				if ( rootNode == null )
+				{
+					pinError = ".sbproj root is not a JSON object";
+				}
+				else
+				{
+					if ( !rootNode.ContainsKey( "Config" ) )
+						rootNode["Config"] = new JsonObject();
+					var configNode = rootNode["Config"] as JsonObject;
+					if ( configNode == null )
+					{
+						pinError = ".sbproj 'Config' is not an object";
+					}
+					else
+					{
+						if ( !configNode.ContainsKey( "PackageReferences" ) )
+							configNode["PackageReferences"] = new JsonArray();
+						var refsArr = configNode["PackageReferences"] as JsonArray;
+						if ( refsArr == null )
+						{
+							pinError = ".sbproj 'Config.PackageReferences' is not an array";
+						}
+						else
+						{
+							// B.1.9 idempotency: check if ident already present
+							foreach ( var node in refsArr )
+							{
+								if ( node != null && node.GetValueKind() == JsonValueKind.String
+									&& node.GetValue<string>() == ident )
+								{
+									alreadyPinned = true;
+									break;
+								}
+							}
+							if ( !alreadyPinned )
+							{
+								refsArr.Add( ident );
+								File.WriteAllText( sbproj, rootNode.ToJsonString(
+									new JsonSerializerOptions { WriteIndented = true } ) );
+								pinned = true;
+							}
+						}
+					}
+				}
+			}
+		}
+		catch ( Exception ex )
+		{
+			pinError = ex.Message;
+		}
+
+		return new
+		{
+			installed     = true,
+			downloaded,
+			pinned,
+			alreadyPinned,
+			pinError,
+			ident,
+			name          = assetName,
+			path          = assetPath,
+			relativePath  = assetRelative
+		};
 	}
 }
 
@@ -4214,5 +4355,260 @@ public class FindInProjectHandler : IBridgeHandler
 		}
 
 		return Task.FromResult<object>( new { symbol, count = hits.Count, results = hits } );
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tag management handlers (S5 — 2026-05-12).
+// Operate on GameObject.Tags (Sandbox.GameTags). Canonical names match JTC's
+// tag_add / tag_list / tag_remove since no Lou tool by these names previously
+// existed. Idempotency is enforced via Has() pre-check on add/remove.
+// ──────────────────────────────────────────────────────────────────────────────
+
+public class TagAddHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var id = p.GetProperty( "id" ).GetString();
+		if ( !Guid.TryParse( id, out var guid ) )
+			return Task.FromResult<object>( new { error = "Invalid GUID" } );
+
+		var go = scene.Directory.FindByGuid( guid );
+		if ( go == null )
+			return Task.FromResult<object>( new { error = $"GameObject not found: {id}" } );
+
+		var tag = p.GetProperty( "tag" ).GetString();
+		if ( string.IsNullOrWhiteSpace( tag ) )
+			return Task.FromResult<object>( new { error = "tag is required" } );
+
+		bool alreadyHad = go.Tags.Has( tag );
+		if ( !alreadyHad )
+			go.Tags.Add( tag );
+
+		return Task.FromResult<object>( new { added = !alreadyHad, alreadyHad, id, tag } );
+	}
+}
+
+public class TagListHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var id = p.GetProperty( "id" ).GetString();
+		if ( !Guid.TryParse( id, out var guid ) )
+			return Task.FromResult<object>( new { error = "Invalid GUID" } );
+
+		var go = scene.Directory.FindByGuid( guid );
+		if ( go == null )
+			return Task.FromResult<object>( new { error = $"GameObject not found: {id}" } );
+
+		var tags = go.Tags.TryGetAll().ToArray();
+		return Task.FromResult<object>( new { id, tags, count = tags.Length } );
+	}
+}
+
+public class TagRemoveHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var id = p.GetProperty( "id" ).GetString();
+		if ( !Guid.TryParse( id, out var guid ) )
+			return Task.FromResult<object>( new { error = "Invalid GUID" } );
+
+		var go = scene.Directory.FindByGuid( guid );
+		if ( go == null )
+			return Task.FromResult<object>( new { error = $"GameObject not found: {id}" } );
+
+		var tag = p.GetProperty( "tag" ).GetString();
+		if ( string.IsNullOrWhiteSpace( tag ) )
+			return Task.FromResult<object>( new { error = "tag is required" } );
+
+		bool had = go.Tags.Has( tag );
+		if ( had )
+			go.Tags.Remove( tag );
+
+		return Task.FromResult<object>( new { removed = had, id, tag } );
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Scene search handlers (S6 — 2026-05-12).
+// Walk the active scene and return GameObjects matching a tag, component type,
+// or name pattern. Canonical names match JTC's scene_find_* trio since no Lou
+// tool by these names previously existed.
+// ──────────────────────────────────────────────────────────────────────────────
+
+public class SceneFindByTagHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var tag = p.GetProperty( "tag" ).GetString();
+		if ( string.IsNullOrWhiteSpace( tag ) )
+			return Task.FromResult<object>( new { error = "tag is required" } );
+
+		var found = scene.FindAllWithTag( tag )
+			.Select( go => new {
+				id = go.Id.ToString(),
+				name = go.Name,
+				tags = go.Tags.TryGetAll().ToArray()
+			})
+			.ToArray();
+
+		return Task.FromResult<object>( new { tag, count = found.Length, results = found } );
+	}
+}
+
+public class SceneFindByComponentHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var typeName = p.GetProperty( "componentType" ).GetString();
+		if ( string.IsNullOrWhiteSpace( typeName ) )
+			return Task.FromResult<object>( new { error = "componentType is required" } );
+
+		var typeDesc = Game.TypeLibrary.GetType( typeName );
+		if ( typeDesc == null )
+			return Task.FromResult<object>( new { error = $"Component type not found: {typeName}" } );
+
+		var found = scene.GetAllComponents( typeDesc.TargetType )
+			.Select( c => new {
+				id = c.GameObject.Id.ToString(),
+				name = c.GameObject.Name,
+				componentType = c.GetType().Name
+			})
+			.ToArray();
+
+		return Task.FromResult<object>( new { componentType = typeName, count = found.Length, results = found } );
+	}
+}
+
+public class SceneFindObjectsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var query = p.GetProperty( "query" ).GetString();
+		if ( string.IsNullOrWhiteSpace( query ) )
+			return Task.FromResult<object>( new { error = "query is required" } );
+
+		// Glob → regex: escape regex specials, then * → .*
+		var regexPattern = "^" + Regex.Escape( query ).Replace( "\\*", ".*" ) + "$";
+		var regex = new Regex( regexPattern, RegexOptions.IgnoreCase );
+
+		var found = scene.GetAllObjects( true )
+			.Where( go => go.Name != null && regex.IsMatch( go.Name ) )
+			.Select( go => new { id = go.Id.ToString(), name = go.Name } )
+			.ToArray();
+
+		return Task.FromResult<object>( new { query, count = found.Length, results = found } );
+	}
+}
+
+// ───────── component lifecycle (S7, 2026-05-12) ─────────────────────────────
+// component_list: enumerate go.Components.GetAll(); returns type + enabled state.
+// component_remove: resolve type via Game.TypeLibrary, Destroy() matching
+// components on the GO. Idempotent — reports removed=false if absent.
+// ──────────────────────────────────────────────────────────────────────────────
+
+public class ComponentListHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var id = p.GetProperty( "id" ).GetString();
+		if ( !Guid.TryParse( id, out var guid ) )
+			return Task.FromResult<object>( new { error = "Invalid GUID" } );
+
+		var go = scene.Directory.FindByGuid( guid );
+		if ( go == null )
+			return Task.FromResult<object>( new { error = $"GameObject not found: {id}" } );
+
+		var components = go.Components.GetAll()
+			.Select( c => new {
+				type = c.GetType().Name,
+				fullName = c.GetType().FullName,
+				enabled = c.Enabled,
+			} )
+			.ToArray();
+
+		return Task.FromResult<object>( new {
+			id,
+			name = go.Name,
+			count = components.Length,
+			components,
+		} );
+	}
+}
+
+public class ComponentRemoveHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "No active scene" } );
+
+		var id = p.GetProperty( "id" ).GetString();
+		if ( !Guid.TryParse( id, out var guid ) )
+			return Task.FromResult<object>( new { error = "Invalid GUID" } );
+
+		var go = scene.Directory.FindByGuid( guid );
+		if ( go == null )
+			return Task.FromResult<object>( new { error = $"GameObject not found: {id}" } );
+
+		var typeName = p.GetProperty( "component" ).GetString();
+		if ( string.IsNullOrWhiteSpace( typeName ) )
+			return Task.FromResult<object>( new { error = "component is required" } );
+
+		var typeDesc = Game.TypeLibrary.GetType( typeName );
+		if ( typeDesc == null )
+			return Task.FromResult<object>( new { error = $"Component type not found: {typeName}" } );
+
+		var matching = go.Components.GetAll()
+			.Where( c => c.GetType() == typeDesc.TargetType )
+			.ToArray();
+
+		if ( matching.Length == 0 )
+			return Task.FromResult<object>( new {
+				removed = false,
+				reason = $"No '{typeName}' component on GameObject",
+				id,
+				component = typeName,
+			} );
+
+		foreach ( var c in matching )
+			c.Destroy();
+
+		return Task.FromResult<object>( new {
+			removed = true,
+			count = matching.Length,
+			id,
+			component = typeName,
+		} );
 	}
 }

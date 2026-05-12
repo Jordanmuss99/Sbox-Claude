@@ -72,8 +72,8 @@ export function registerAssetTools(
 
   // ── install_asset ────────────────────────────────────────────────
   server.tool(
-    "install_asset",
-    "Install a community asset package into the project by its ident (e.g. 'facepunch.flatgrass'). Adds it as a project dependency",
+    "asset_install_pinned",
+    "Install a community asset package AND pin it into ProjectConfig.PackageReferences so it survives reload. Idempotent on both AssetSystem (skips InstallAsync when already cloud-installed) and PackageReferences (no duplicate entries). Returns: { installed, downloaded: bool|'unknown', pinned, pinError, ident, name, path, relativePath }. The old name 'install_asset' is registered as a lou-rename alias.",
     {
       ident: z
         .string()
@@ -82,7 +82,7 @@ export function registerAssetTools(
         ),
     },
     async (params) => {
-      const res = await bridge.send("install_asset", params);
+      const res = await bridge.send("asset_install_pinned", params);
       if (!res.success) {
         return { content: [{ type: "text", text: `Error: ${res.error}` }] };
       }

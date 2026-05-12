@@ -2,7 +2,7 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: 100 of 109 Tools Implemented
+## Status: 111 canonical TS tools / 100 C# handlers / 11 TS-only / 4 JTC-compat aliases (= 115 runtime-registered total)
 
 **Last updated:** 2026-04-26
 **Bridge:** File-based IPC ✅ working on main thread
@@ -29,7 +29,7 @@ Claude Code → (stdio) → MCP Server → (file IPC) → Bridge Addon → s&box
                           Node.js        %TEMP%/sbox-bridge-ipc/     C# in Editor
 ```
 
-**NOT WebSocket.** s&box's sandboxed C# environment does not allow `System.Net` (HttpListener, WebSocket, TcpListener). Communication uses **file-based IPC**:
+**File-based IPC** (not WebSocket/HTTP). This MCP server uses a directory-based message-passing protocol via `%TEMP%\sbox-bridge-ipc\`. File IPC was chosen for simplicity and to avoid port-conflict issues; the s&box editor process IS capable of running an `HttpListener` (as demonstrated by JTC's MCP server on port 29015), so the choice is architectural — not mandated by the sandbox. Communication uses **file-based IPC**:
 
 1. MCP Server writes `req_<id>.json` to the temp directory
 2. Bridge addon polls for request files via `System.Threading.Timer` (50ms)
@@ -311,3 +311,69 @@ echo '{"id":"test","command":"get_project_info","params":{}}' > %TEMP%/sbox-brid
 # Check response:
 cat %TEMP%/sbox-bridge-ipc/res_test.json
 ```
+
+## Alias / Rename Migration Tables
+
+This MCP server registers two categories of alias names that forward to canonical tools via `bridge.send(<canonical>, args)`. Each alias emits a one-shot deprecation warning to stderr on first call per process. The wire-level command name sent to the C# bridge is ALWAYS the canonical name — the C# side has no knowledge of aliases.
+
+### JTC-Compat Aliases
+
+JTC tool names (from `sbox.game/jtc/mcp-server`) registered as aliases that forward to Lou canonical tools. Warning text: `[sbox-mcp] tool '<jtc>' is a JTC-compat alias; canonical name is '<lou>'`.
+
+| JTC alias (deprecated) | Canonical Lou tool | Added |
+|---|---|---|
+| `editor_undo` | `undo` | B.1.4 (2026-05-12) |
+| `editor_redo` | `redo` | B.1.5 (2026-05-12) |
+| `editor_save_scene` | `save_scene` | B.1.6 (2026-05-12) |
+| `editor_take_screenshot` | `take_screenshot` | B.1.7 (2026-05-12) |
+| `editor_get_selection` | `get_selected_objects` | S1 (2026-05-12) |
+| `editor_is_playing` | `is_playing` | S1 (2026-05-12) |
+| `editor_play` | `start_play` | S1 (2026-05-12) |
+| `editor_select_object` | `select_object` | S1 (2026-05-12) |
+| `editor_stop` | `stop_play` | S1 (2026-05-12) |
+| `file_read` | `read_file` | S2 (2026-05-12) |
+| `file_write` | `write_file` | S2 (2026-05-12) |
+| `project_info` | `get_project_info` | S2 (2026-05-12) |
+| `scene_clone_object` | `duplicate_gameobject` | S2 (2026-05-12) |
+| `scene_create_object` | `create_gameobject` | S2 (2026-05-12) |
+| `scene_delete_object` | `delete_gameobject` | S2 (2026-05-12) |
+| `scene_get_hierarchy` | `get_scene_hierarchy` | S2 (2026-05-12) |
+| `scene_load` | `load_scene` | S2 (2026-05-12) |
+| `scene_reparent_object` | `set_parent` | S2 (2026-05-12) |
+| `scene_set_transform` | `set_transform` | S2 (2026-05-12) |
+| `asset_mount` | `asset_install_pinned` | S3 (2026-05-12) |
+| `asset_search` | `list_asset_library` *(adapter: `amount`→`maxResults`, default 10)* | S3 (2026-05-12) |
+| `component_add` | `add_component_with_properties` *(adapter: `objectId`→`id`, `componentType`→`component`)* | S3 (2026-05-12) |
+| `component_set` | `set_property` *(adapter: `objectId`→`id`, `componentType`→`component`)* | S3 (2026-05-12) |
+| `sbox_search_api` | `search_types` *(adapter: `query`→`pattern`)* | S3 (2026-05-12) |
+| `file_list` | `list_project_files` *(adapter: `dir`→`path`)* | S2 catch-up (2026-05-12) |
+| `editor_console_output` | `get_console_output` *(forwards via bridge; canonical lacks C# handler today — both broken until LogCapture lands)* | S1 catch-up (2026-05-12) |
+
+*Deferred*: `get_server_status → get_bridge_status` (canonical is genuinely TS-local; needs `localHandler` infra in registerAlias); `sbox_get_api_type → describe_type` (JTC adds `startIndex`/`maxLength`; needs Lou-side Zod schema verification before deciding adapter vs alias). See `PENDING_ALIAS_REQUIREMENTS` in `jtc-aliases.ts`.
+
+Registry: `sbox-mcp-server/src/tools/jtc-aliases.ts` → `JTC_ALIASES`.
+
+### Lou-Internal Renames
+
+Old Lou canonical names that were renamed in a B.1.11 / D5 inversion. The old names continue to resolve via alias for a deprecation cycle. Warning text: `[sbox-mcp] tool '<old>' was renamed to '<new>'; please update your callers`.
+
+| Old name (deprecated) | New canonical name | Renamed in |
+|---|---|---|
+| `install_asset` | `asset_install_pinned` | B.1.11 (2026-05-12) |
+
+Registry: `sbox-mcp-server/src/tools/jtc-aliases.ts` → `LOU_RENAMES`.
+
+### Adding a new alias
+
+1. Decide kind: JTC-compat (foreign name) or lou-rename (internal rename).
+2. Add entry to the matching registry in `jtc-aliases.ts`.
+3. Add a row to the appropriate table above.
+4. Run `npm test` — the parity test enforces (a) canonical target exists and has a C# handler, (b) no name collisions, (c) no dispatch chains, (d) no key in both registries.
+5. Run `npm run smoke:aliases` — verifies the alias registers at runtime via the spawned MCP server.
+
+### Removing an alias
+
+Do NOT delete without a deprecation cycle. Downstream consumers may still depend on the old name. Document the planned removal in this file with a target date first.
+
+See `.omc/specs/jtc-vs-lousputthole-matrix.v2.md` for the full implementation status of all 48 JTC tools.
+
