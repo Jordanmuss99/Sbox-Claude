@@ -189,12 +189,12 @@ describe("parity inventory sanity", () => {
       lou_renames: louKeys.size,
       runtime_registered_total: ts.size + jtcKeys.size + louKeys.size,
     }).toEqual({
-      canonical_ts: 120,
+      canonical_ts: 124,
       cs_handlers: 109,
-      ts_only: 11,
+      ts_only: 15,
       jtc_aliases: 34,
       lou_renames: 1,
-      runtime_registered_total: 155,
+      runtime_registered_total: 159,
     });
   });
 });

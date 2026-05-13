@@ -140,9 +140,21 @@ async function main() {
     fail(`missing aliases: ${missing.join(", ")}`);
   console.log(`all ${expectedAliases.length} JTC aliases present: ${expectedAliases.join(", ")}`);
 
-  if (tools.length !== 155)
-    fail(`expected 155 tools (120 canonical + 34 JTC aliases + 1 Lou rename), got ${tools.length}`);
-  console.log(`count check OK: ${tools.length} == 155`);
+  if (tools.length !== 159)
+    fail(`expected 159 tools (124 canonical + 34 JTC aliases + 1 Lou rename), got ${tools.length}`);
+  console.log(`count check OK: ${tools.length} == 159`);
+
+  // S9 — 4 docs tools must be registered (no aliases, canonical names match JTC)
+  const docsTools = [
+    "sbox_cache_status",
+    "sbox_list_doc_categories",
+    "sbox_search_docs",
+    "sbox_get_doc_page",
+  ];
+  const missingDocs = docsTools.filter((d) => !tools.some((t) => t.name === d));
+  if (missingDocs.length > 0)
+    fail(`missing S9 docs tools: ${missingDocs.join(", ")}`);
+  console.log(`S9 docs tools present: ${docsTools.join(", ")}`);
 
   // 3. verify alias description points at canonical
   const undoAlias = tools.find((t) => t.name === "editor_undo");

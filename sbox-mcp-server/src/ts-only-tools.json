@@ -11,6 +11,10 @@
     "get_console_output",
     "pause_play",
     "prepare_publish",
-    "resume_play"
+    "resume_play",
+    "sbox_cache_status",
+    "sbox_get_doc_page",
+    "sbox_list_doc_categories",
+    "sbox_search_docs"
   ]
 }
