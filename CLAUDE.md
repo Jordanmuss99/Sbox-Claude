@@ -2,15 +2,19 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: 111 canonical TS tools / 100 C# handlers / 11 TS-only / 4 JTC-compat aliases (= 115 runtime-registered total)
+## Status: 126 canonical TS tools / 112 C# handlers / 14 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 161 runtime-registered total)
 
-**Last updated:** 2026-04-26
+**Last updated:** 2026-05-13
 **Bridge:** File-based IPC ✅ working on main thread
-**Handlers:** 100 compiled and registered (of 109 MCP tools defined)
-**Not implementable:** 9 tools (no s&box API exists — see "Known Issues")
+**Handlers:** 112 compiled and registered (TS canonicals minus 14 TS-only = 112 paired with C#)
+**JTC parity:** **48 / 48 (100%)** 🎉 — full parity 2026-05-13 (S8 + S9). **S10 bonus**: real `get_console_output` (NLog capture beyond JTC's manual-buffer approach).
+**Not implementable:** 8 tools (no s&box API exists — see "Known Issues"). These overlap with the TS-only allowlist. S10 (2026-05-13) moved `get_console_output` out of this list — it now works via NLog `MemoryTarget` attached by reflection.
 
 ### What's new in this update
 
+- **S10 — Real console capture (bonus, beyond JTC parity)**: `get_console_output` now works for real. Subclasses `NLog.Targets.MemoryTarget` via runtime reflection on `AppDomain.CurrentDomain.GetAssemblies()` (NLog namespace is loaded at runtime but not compile-visible in s&box's sandbox — same blocker JTC hit). Surfaces the full editor log stream including `[engine/MaterialSystem]`, `[MCP Docs]`, `[SboxBridge]`, controller-detect lines. Parses NLog's default `${longdate}|${level}|${logger}|${message}` layout back into structured records. JTC's equivalent (`ConsoleCapture`) is a manual `AddEntry()` buffer and shows only lines they explicitly logged.
+- **S8 — Execution tools (2 canonical, hit 100% JTC parity)**: `console_run` wraps `Sandbox.ConsoleSystem.Run`; `execute_csharp` evaluates a C# expression/block via Roslyn-via-reflection (`Microsoft.CodeAnalysis.CSharp.Scripting`). Graceful degradation when Roslyn isn't loaded in the build (returns structured `{ executed: false, error, note }`). Note: `ConsoleSystem.Run` in editor context is gated by the s&box sandbox — most user-input commands fail with "Can't run '<x>'". This is an upstream restriction shared by JTC's identical implementation. Originally deferred per gate2 G2.3 pending B.1.8 long-running-handler protocol; Phase-1 inspection revealed both tools are synchronous and fit inside the bridge's 30 s timeout, so B.1.8 was not actually required.
+- **S9 — s&box docs cluster (4 TS-only tools)**: `sbox_search_docs`, `sbox_get_doc_page`, `sbox_list_doc_categories`, `sbox_cache_status`. Crawls `sbox.game/llms.txt` (219 doc pages) and caches them as raw Markdown at `<temp>/sbox-docs-cache/` with a 24 h TTL. Hand-rolled TF-IDF search, zero new npm deps. Works even when the s&box editor is closed — pure Node server-side. See CHANGELOG "Added — s&box docs cluster (S9)" and `.omc/specs/s9-spec.md` for the post-mortem (JTC's Outline-share-based docs implementation is non-functional today, prompting the pivot to `sbox.game/llms.txt`).
 - **Generic component-button driver** — `invoke_button` + `list_component_buttons` work on any component with a `[Button]` attribute. Plus `set_prefab_ref` for assigning prefab GameObjects to component properties.
 - **Map editing primitives** — `add_terrain_hill`, `add_terrain_clearing`, `add_terrain_trail`, `clear_terrain_features` drive a `MapBuilder` component by mutating its editable `Hills`/`Clearings`/`Trails`/`CavePath` lists and rebuilding.
 - **Sculpt brushes** — `sculpt_terrain` modifies the heightmap directly with raise/lower/flatten/smooth modes.

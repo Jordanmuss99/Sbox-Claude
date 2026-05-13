@@ -8,7 +8,6 @@
     "get_bridge_status",
     "get_build_status",
     "get_compile_errors",
-    "get_console_output",
     "pause_play",
     "prepare_publish",
     "resume_play",

@@ -40,6 +40,7 @@ import { registerTagTools } from "./tools/tags.js";
 import { registerSceneSearchTools } from "./tools/scene-search.js";
 import { registerJtcAliasTools } from "./tools/jtc-aliases.js";
 import { registerDocsTools } from "./tools/docs.js";
+import { registerExecutionTools } from "./tools/execution.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -147,6 +148,7 @@ registerDiscoveryTools(server, bridge);
 registerTagTools(server, bridge);
 registerSceneSearchTools(server, bridge);
 registerDocsTools(server);
+registerExecutionTools(server, bridge);
 registerJtcAliasTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */

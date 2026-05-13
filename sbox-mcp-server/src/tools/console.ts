@@ -29,10 +29,40 @@ export function registerConsoleTools(
       if (!res.success) {
         return { content: [{ type: "text", text: `Error: ${res.error}` }] };
       }
+      const data = res.data as {
+        total?: number;
+        returned?: number;
+        severity?: string;
+        entries?: Array<{
+          timestamp: string;
+          level: string;
+          loggerName: string;
+          message: string;
+          exception?: string | null;
+        }>;
+        error?: string;
+      };
+      if (data.error) {
+        return { content: [{ type: "text", text: `Error: ${data.error}` }] };
+      }
+      const entries = data.entries ?? [];
+      if (entries.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No console entries (severity=${data.severity ?? "all"}, total captured=${data.total ?? 0}).`,
+            },
+          ],
+        };
+      }
+      const lines = entries.map((e) => {
+        const head = `[${e.timestamp}] ${e.level.toUpperCase()}${e.loggerName ? ` <${e.loggerName}>` : ""}: ${e.message}`;
+        return e.exception ? `${head}\n  ${e.exception.replace(/\n/g, "\n  ")}` : head;
+      });
+      const header = `Returned ${data.returned ?? entries.length} of ${data.total ?? "?"} captured entries (severity=${data.severity ?? "all"}, newest first):`;
       return {
-        content: [
-          { type: "text", text: JSON.stringify(res.data, null, 2) },
-        ],
+        content: [{ type: "text", text: `${header}\n\n${lines.join("\n")}` }],
       };
     }
   );

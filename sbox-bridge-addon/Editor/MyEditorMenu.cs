@@ -60,6 +60,10 @@ public static class ClaudeBridge
 	public static void OnHotload()
 	{
 		Log.Info( "[SboxBridge] Hotload detected — restarting bridge..." );
+		// Repopulate handlers in case the static `_handlers` dict got reset by a
+		// reload of THIS class but RegisterHandlers() didn't fire (the static
+		// cctor only runs on fresh type init, not on hotload re-entry).
+		RegisterHandlers();
 		StartBridge();
 	}
 
@@ -259,6 +263,16 @@ public static class ClaudeBridge
 
 		// ── Scene info (S4 closing, 2026-05-12) ────────────────────────────
 		Register( "get_scene_info",           new GetSceneInfoHandler() );
+
+		// Execution (S8, 2026-05-13)
+		Register( "console_run",              new ConsoleRunHandler() );
+		Register( "execute_csharp",           new ExecuteCSharpHandler() );
+
+		// Console capture (S10, 2026-05-13) — register handler FIRST so it's reachable
+		// even if log-capture attachment fails (handler will surface the attach error).
+		Register( "get_console_output",       new GetConsoleOutputHandler() );
+		try { BridgeLogTarget.EnsureAttached(); }
+		catch ( Exception ex ) { Log.Warning( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
 
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
@@ -4645,5 +4659,411 @@ public class GetSceneInfoHandler : IBridgeHandler
 			isPrefabSession = session.IsPrefabSession,
 			isPlaying = session.IsPlaying,
 		} );
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// S8 (2026-05-13) — Execution tools
+//
+// console_run:    Sandbox.ConsoleSystem.Run() wrapper. Fire-and-forget on the
+//                 editor side; returns success/error synchronously.
+// execute_csharp: Roslyn-via-reflection scripting. Microsoft.CodeAnalysis.
+//                 CSharp.Scripting isn't a hard reference (s&box doesn't expose
+//                 it as a project dep), but the assembly is loaded into the
+//                 editor's AppDomain. ScriptRunner.TryCreate returns null when
+//                 that assembly isn't found, and ExecuteCSharpHandler surfaces
+//                 a clear structured error instead of crashing.
+//
+// Both handlers complete inside the bridge's 30 s timeout. Roslyn first-compile
+// takes 2–5 s; subsequent calls are sub-second.
+// ──────────────────────────────────────────────────────────────────────────────
+
+public class ConsoleRunHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var command = p.TryGetProperty( "command", out var c ) ? c.GetString() : null;
+		if ( string.IsNullOrWhiteSpace( command ) )
+			return Task.FromResult<object>( new { error = "command is required" } );
+
+		try
+		{
+			Sandbox.ConsoleSystem.Run( command );
+			return Task.FromResult<object>( new {
+				executed = true,
+				command,
+				note = "ConsoleSystem.Run dispatched; output (if any) goes to the editor console, not this response.",
+			} );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { error = ex.Message } );
+		}
+	}
+}
+
+public class ExecuteCSharpHandler : IBridgeHandler
+{
+	static readonly Lazy<ScriptRunner> _runner = new( ScriptRunner.TryCreate );
+
+	public async Task<object> Execute( JsonElement p )
+	{
+		var code = p.TryGetProperty( "code", out var c ) ? c.GetString() : null;
+		if ( string.IsNullOrWhiteSpace( code ) )
+			return new { error = "code is required" };
+
+		var imports = p.TryGetProperty( "imports", out var im ) ? im.GetString() : null;
+
+		var runner = _runner.Value;
+		if ( runner == null )
+		{
+			return new {
+				executed = false,
+				result = "",
+				error = "Roslyn scripting (Microsoft.CodeAnalysis.CSharp.Scripting) is not loaded in this s&box build.",
+				note = "Use console_run or write_file + trigger_hotload to apply code permanently.",
+			};
+		}
+
+		try
+		{
+			var result = await runner.EvaluateAsync( code, imports );
+			return new {
+				executed = true,
+				result = result?.ToString() ?? "(null)",
+				type = result?.GetType().FullName ?? "void",
+			};
+		}
+		catch ( Exception ex )
+		{
+			// Roslyn wraps compile errors in CompilationErrorException; its Message is the diagnostic.
+			return new {
+				executed = false,
+				result = "",
+				error = ex.Message,
+				stack = ex.StackTrace ?? "",
+			};
+		}
+	}
+
+	// ── Reflective Roslyn adapter ────────────────────────────────────────────
+	sealed class ScriptRunner
+	{
+		readonly MethodInfo _evaluateAsync;
+		readonly Type _scriptOptionsType;
+		readonly object _scriptOptions;
+
+		ScriptRunner( MethodInfo evaluateAsync, Type scriptOptionsType, object scriptOptions )
+		{
+			_evaluateAsync = evaluateAsync;
+			_scriptOptionsType = scriptOptionsType;
+			_scriptOptions = scriptOptions;
+		}
+
+		public static ScriptRunner TryCreate()
+		{
+			try
+			{
+				var asm = AppDomain.CurrentDomain.GetAssemblies()
+					.FirstOrDefault( a => a.GetName().Name == "Microsoft.CodeAnalysis.CSharp.Scripting" );
+				if ( asm == null )
+				{
+					try { asm = Assembly.Load( "Microsoft.CodeAnalysis.CSharp.Scripting" ); }
+					catch { return null; }
+				}
+
+				var scriptType = asm?.GetType( "Microsoft.CodeAnalysis.CSharp.Scripting.CSharpScript" );
+				if ( scriptType == null ) return null;
+
+				var eval = scriptType.GetMethods( BindingFlags.Public | BindingFlags.Static )
+					.Where( m => m.Name == "EvaluateAsync" && !m.IsGenericMethodDefinition )
+					.FirstOrDefault( m =>
+					{
+						var pp = m.GetParameters();
+						return pp.Length >= 1 && pp[0].ParameterType == typeof( string );
+					} );
+				if ( eval == null ) return null;
+
+				var optionsType = eval.GetParameters().Length > 1 ? eval.GetParameters()[1].ParameterType : null;
+				if ( optionsType == null ) return null;
+
+				var defaultProp = optionsType.GetProperty( "Default", BindingFlags.Public | BindingFlags.Static );
+				var defaultOpts = defaultProp?.GetValue( null );
+				if ( defaultOpts == null ) return null;
+
+				// Inject all loaded assemblies as script references — lets the snippet
+				// reach Sandbox / Editor / project types without manual `using` work.
+				var refs = AppDomain.CurrentDomain.GetAssemblies()
+					.Where( a => !a.IsDynamic && !string.IsNullOrEmpty( a.Location ) )
+					.ToArray();
+				var withRefs = optionsType.GetMethod( "WithReferences", new[] { typeof( IEnumerable<Assembly> ) } );
+				if ( withRefs != null )
+				{
+					var maybe = withRefs.Invoke( defaultOpts, new object[] { refs } );
+					if ( maybe != null ) defaultOpts = maybe;
+				}
+
+				var withImports = optionsType.GetMethod( "WithImports", new[] { typeof( IEnumerable<string> ) } );
+				if ( withImports != null )
+				{
+					var defaultImports = new[] {
+						"System", "System.Linq", "System.Collections.Generic",
+						"Sandbox", "Editor",
+					};
+					var maybe = withImports.Invoke( defaultOpts, new object[] { defaultImports } );
+					if ( maybe != null ) defaultOpts = maybe;
+				}
+
+				return new ScriptRunner( eval, optionsType, defaultOpts );
+			}
+			catch ( Exception ex )
+			{
+				Log.Warning( $"[SboxBridge] Could not initialise Roslyn scripting: {ex.Message}" );
+				return null;
+			}
+		}
+
+		public async Task<object> EvaluateAsync( string code, string extraImports )
+		{
+			var opts = _scriptOptions;
+			if ( !string.IsNullOrWhiteSpace( extraImports ) )
+			{
+				var addImports = _scriptOptionsType.GetMethod( "AddImports", new[] { typeof( IEnumerable<string> ) } );
+				if ( addImports != null )
+				{
+					var ns = extraImports.Split( ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries );
+					var maybe = addImports.Invoke( opts, new object[] { ns } );
+					if ( maybe != null ) opts = maybe;
+				}
+			}
+
+			// Signature: EvaluateAsync(string code, ScriptOptions options, object globals, Type globalsType, CancellationToken token)
+			var paramInfo = _evaluateAsync.GetParameters();
+			var args = new object[paramInfo.Length];
+			args[0] = code;
+			if ( paramInfo.Length > 1 ) args[1] = opts;
+			for ( var i = 2; i < paramInfo.Length; i++ )
+				args[i] = paramInfo[i].HasDefaultValue ? paramInfo[i].DefaultValue : null;
+
+			var task = (Task)_evaluateAsync.Invoke( null, args );
+			await task.ConfigureAwait( false );
+			var resultProp = task.GetType().GetProperty( "Result" );
+			return resultProp?.GetValue( task );
+		}
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// S10 (2026-05-13) — Console capture via reflection on NLog.Targets.MemoryTarget
+//
+// s&box uses NLog but does NOT expose the NLog namespace at compile time —
+// only at runtime (the assembly is loaded into the editor's AppDomain). Same
+// problem JTC hit, prompting their fallback to manual AddEntry() in their
+// `ConsoleCapture.cs`. We take the harder path: reflection-only access to
+// NLog's built-in `MemoryTarget`, which captures every Log.Info/Warning/Error
+// from any code in the editor (game, addons, Facepunch internals).
+//
+// MemoryTarget formats each entry using its inherited `Layout` (default:
+// `${longdate}|${level:uppercase=true}|${logger}|${message}`) and stores them
+// in a public IList<string> property called `Logs`. We read that list at
+// query time, parse the `|`-separated fields back into a structured shape, and
+// surface them via get_console_output.
+// ──────────────────────────────────────────────────────────────────────────────
+
+public static class BridgeLogTarget
+{
+	static object _target;        // NLog.Targets.MemoryTarget instance
+	static object _logsList;       // IList<string> from MemoryTarget.Logs
+	static bool _attached;
+	static string _attachError;
+
+	public static bool Attached => _attached;
+	public static string AttachError => _attachError;
+
+	public static void EnsureAttached()
+	{
+		if ( _attached ) return;
+		try
+		{
+			var nlogAsm = AppDomain.CurrentDomain.GetAssemblies()
+				.FirstOrDefault( a => a.GetName().Name == "NLog" );
+			if ( nlogAsm == null )
+			{
+				_attachError = "NLog assembly not loaded in AppDomain";
+				Log.Warning( $"[SboxBridge] {_attachError}" );
+				return;
+			}
+
+			var memoryTargetType = nlogAsm.GetType( "NLog.Targets.MemoryTarget" );
+			var logManagerType = nlogAsm.GetType( "NLog.LogManager" );
+			var logLevelType = nlogAsm.GetType( "NLog.LogLevel" );
+			var logFactoryType = nlogAsm.GetType( "NLog.LogFactory" );
+			var loggingConfigType = nlogAsm.GetType( "NLog.Config.LoggingConfiguration" );
+			var targetBaseType = nlogAsm.GetType( "NLog.Targets.Target" );
+
+			if ( memoryTargetType == null || logManagerType == null || logLevelType == null
+				|| logFactoryType == null || loggingConfigType == null || targetBaseType == null )
+			{
+				_attachError = "required NLog types not found in assembly";
+				Log.Warning( $"[SboxBridge] {_attachError}" );
+				return;
+			}
+
+			// Create MemoryTarget + set Name
+			var target = Activator.CreateInstance( memoryTargetType );
+			memoryTargetType.GetProperty( "Name" )?.SetValue( target, "sbox-bridge-capture" );
+
+			// Locate LogFactory via LogManager.Setup().LogFactory
+			var setupMi = logManagerType.GetMethod( "Setup", Type.EmptyTypes );
+			var builder = setupMi?.Invoke( null, null );
+			var factoryProp = builder?.GetType().GetProperty( "LogFactory" );
+			var factory = factoryProp?.GetValue( builder );
+			if ( factory == null )
+			{
+				_attachError = "could not reach LogFactory via reflection";
+				Log.Warning( $"[SboxBridge] {_attachError}" );
+				return;
+			}
+
+			var configProp = logFactoryType.GetProperty( "Configuration" );
+			var config = configProp?.GetValue( factory );
+			if ( config == null )
+			{
+				_attachError = "LogFactory.Configuration is null";
+				Log.Warning( $"[SboxBridge] {_attachError}" );
+				return;
+			}
+
+			// AddTarget(name, target)
+			var addTarget = loggingConfigType.GetMethod( "AddTarget", new[] { typeof( string ), targetBaseType } );
+			addTarget?.Invoke( config, new object[] { "sbox-bridge-capture", target } );
+
+			// AddRule(LogLevel.Trace, LogLevel.Fatal, target, "*")
+			var traceLevel = logLevelType.GetField( "Trace", BindingFlags.Public | BindingFlags.Static )?.GetValue( null );
+			var fatalLevel = logLevelType.GetField( "Fatal", BindingFlags.Public | BindingFlags.Static )?.GetValue( null );
+			var addRule = loggingConfigType.GetMethod( "AddRule", new[] { logLevelType, logLevelType, targetBaseType, typeof( string ) } );
+			addRule?.Invoke( config, new object[] { traceLevel, fatalLevel, target, "*" } );
+
+			// Re-assign config + reconfig
+			configProp.SetValue( factory, config );
+			logFactoryType.GetMethod( "ReconfigExistingLoggers", Type.EmptyTypes )?.Invoke( factory, null );
+
+			_target = target;
+			_logsList = memoryTargetType.GetProperty( "Logs" )?.GetValue( target );
+			_attached = _logsList != null;
+
+			if ( _attached )
+				Log.Info( "[SboxBridge] BridgeLogTarget attached via reflection — NLog log capture is live" );
+			else
+			{
+				_attachError = "MemoryTarget.Logs property missing";
+				Log.Warning( $"[SboxBridge] {_attachError}" );
+			}
+		}
+		catch ( Exception ex )
+		{
+			_attachError = ex.Message;
+			Log.Warning( $"[SboxBridge] Reflection-attach failed: {ex.Message}" );
+		}
+	}
+
+	/// <summary>
+	/// Snapshot of the MemoryTarget Logs list (oldest-first per NLog convention).
+	/// Caller is responsible for trimming + reversing for newest-first display.
+	/// </summary>
+	public static List<string> Snapshot()
+	{
+		if ( _logsList == null ) return new List<string>();
+		try
+		{
+			if ( _logsList is System.Collections.IEnumerable enumerable )
+			{
+				var list = new List<string>();
+				foreach ( var item in enumerable )
+					list.Add( item?.ToString() ?? "" );
+				return list;
+			}
+		}
+		catch { }
+		return new List<string>();
+	}
+
+	public static int Count
+	{
+		get
+		{
+			if ( _logsList is System.Collections.ICollection c ) return c.Count;
+			return 0;
+		}
+	}
+}
+
+public class GetConsoleOutputHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var count = p.TryGetProperty( "count", out var cn ) ? cn.GetInt32() : 50;
+		if ( count < 1 ) count = 1;
+		if ( count > 500 ) count = 500;
+
+		var severity = p.TryGetProperty( "severity", out var sv ) ? sv.GetString() : "all";
+		severity = (severity ?? "all").ToLowerInvariant();
+
+		if ( !BridgeLogTarget.Attached )
+			return Task.FromResult<object>( new {
+				error = $"BridgeLogTarget not attached: {BridgeLogTarget.AttachError ?? "unknown reason"}",
+				total = 0,
+				returned = 0,
+				severity,
+				entries = Array.Empty<object>(),
+			} );
+
+		var snapshot = BridgeLogTarget.Snapshot();
+		var total = snapshot.Count;
+
+		// Newest first
+		snapshot.Reverse();
+
+		var parsed = snapshot.Select( ParseEntry ).ToList();
+		var filtered = severity == "all"
+			? parsed
+			: parsed.Where( e => MatchesSeverity( e.level, severity ) ).ToList();
+		var trimmed = filtered.Take( count ).ToList();
+
+		return Task.FromResult<object>( new {
+			total,
+			returned = trimmed.Count,
+			severity,
+			entries = trimmed.Select( e => new {
+				timestamp = e.ts,
+				level = e.level,
+				loggerName = e.logger,
+				message = e.message,
+			} ).ToList(),
+		} );
+	}
+
+	// Default NLog Layout: ${longdate}|${level:uppercase=true}|${logger}|${message}
+	// Parse defensively — if the layout has been overridden, return the raw line as message.
+	static (string ts, string level, string logger, string message) ParseEntry( string raw )
+	{
+		if ( string.IsNullOrEmpty( raw ) )
+			return ("", "", "", "");
+		var parts = raw.Split( new[] { '|' }, 4 );
+		if ( parts.Length == 4 )
+			return (parts[0], parts[1], parts[2], parts[3]);
+		return ("", "", "", raw);
+	}
+
+	static bool MatchesSeverity( string entryLevel, string filter )
+	{
+		var l = (entryLevel ?? "").ToLowerInvariant();
+		return filter switch
+		{
+			"info" => l == "info" || l == "debug" || l == "trace",
+			"warning" or "warn" => l == "warn" || l == "warning",
+			"error" => l == "error" || l == "fatal",
+			_ => true,
+		};
 	}
 }

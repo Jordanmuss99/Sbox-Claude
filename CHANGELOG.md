@@ -4,7 +4,49 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
-**JTC parity sprints (B.2): 8 new canonical tools + 29 JTC-compat aliases. Coverage of JTC `sbox-mcp` tool surface: 37/48 (77.1%).**
+**JTC parity sprints (B.2): 14 new canonical tools + 34 JTC-compat aliases. Coverage of JTC `sbox-mcp` tool surface: 48/48 (100%). 🎉 Full parity achieved 2026-05-13. Bonus: S10 lands real console capture beyond JTC's manual-buffer approach.**
+
+### Added — Real console capture (S10, bonus)
+
+`get_console_output` moved from TS-only stub (one of the 9 "not implementable" tools) to a working C# handler. Captures the full editor log stream — game code, addon code, Facepunch internals — not just lines our bridge logged itself.
+
+**Approach**: subclass `NLog.Targets.MemoryTarget` via runtime reflection on `AppDomain.CurrentDomain.GetAssemblies()` (the `NLog` namespace isn't compile-visible from sandbox code — same blocker JTC hit). Reach `LogFactory.Configuration` via `LogManager.Setup().LogFactory`, attach the target, call `ReconfigExistingLoggers()`. Mirror of our `ExecuteCSharpHandler` ScriptRunner pattern, applied to logging.
+
+**Beyond JTC**: JTC's `ConsoleCapture` is a manual `AddEntry()` buffer (their note: "s&box Logger does not expose an OnEntry event") — it only shows lines they explicitly logged. Our `MemoryTarget` attachment intercepts every NLog entry: live-verified surfacing `[MCP Docs]`, `[engine/MaterialSystem]`, `[SboxBridge]`, controller-detect lines, etc.
+
+**Schema**: `{ count?: number (1-500, default 50), severity?: "all"|"info"|"warning"|"error" (default "all") }`. Default NLog Layout `${longdate}|${level:uppercase=true}|${logger}|${message}` is parsed back into structured `{ timestamp, level, loggerName, message }` records.
+
+### Fixed — Hotload zombie (cumulative discovery during S10)
+
+`OnHotload` now calls `RegisterHandlers()` before `StartBridge()` so the static `_handlers` dict gets repopulated even when the static cctor doesn't fire. This was discovered during S10 verification: a fresh compile registered all 112 handlers correctly, then a stale assembly's `[EditorEvent.Hotload]` callback overwrote `status.json` with 111. Belt-and-suspenders defense against the zombie pattern.
+
+### Added — Execution tools (S8)
+
+Two new canonical tools matching JTC's `console_run` and `execute_csharp`. Mirror JTC's `ExecutionHandler` semantics exactly, including Roslyn-via-reflection scripting and graceful degradation when `Microsoft.CodeAnalysis.CSharp.Scripting` isn't loaded.
+
+- `console_run(command)` — invokes `Sandbox.ConsoleSystem.Run`. Fire-and-forget; returns success/error synchronously. Note: s&box's editor-context sandbox gates which commands are accepted — this is an upstream restriction shared by JTC.
+- `execute_csharp(code, imports?)` — Roslyn scripting via reflection on `Microsoft.CodeAnalysis.CSharp.Scripting.CSharpScript`. The assembly is loaded into the editor's AppDomain on builds where it ships; on builds where it isn't, the handler returns a structured `{ executed: false, error, note }` instead of crashing. Default imports: `System, System.Linq, System.Collections.Generic, Sandbox, Editor`. Extra imports passed comma-separated.
+
+**Why deferred until now**: gate2 G2.3 deferred this cluster pending B.1.8 long-running-handler protocol and explicit user re-approval. Phase-1 inspection of JTC's reference implementation revealed both tools are actually synchronous (Roslyn awaits internally, ConsoleSystem.Run is fire-and-forget) and fit comfortably inside the bridge's existing 30 s timeout. **B.1.8 protocol turned out to be unnecessary for S8** — a scope reduction confirmed against JTC's `ExecutionHandler.cs`. User re-approved S8 2026-05-13.
+
+**Implementation**: 2 new C# handlers (`ConsoleRunHandler`, `ExecuteCSharpHandler`) plus a private `ScriptRunner` reflection adapter in `MyEditorMenu.cs`. 1 new TS module `src/tools/execution.ts` registering both tools. ~200 lines C# + 100 lines TS.
+
+
+### Added — s&box docs cluster (S9)
+
+Four new canonical TS-only tools that mirror JTC's `sbox_*` docs surface. All operate server-side via Node global `fetch` against `sbox.game` — no C# handler, no bridge dependency, work even when the editor is closed.
+
+- `sbox_search_docs(query, limit?, category?)` — TF-IDF search across cached doc pages. Field boosts match JTC: title (3.0), category (2.0), markdown body (1.0). Includes prefix matching and snippet extraction.
+- `sbox_get_doc_page(url, startIndex?, maxLength?)` — fetch a cached page as Markdown, chunked for context-window safety (100–20000 chars per call, default 5000).
+- `sbox_list_doc_categories` — 18 categories with page counts, derived from URL path-segment-2.
+- `sbox_cache_status` — cache directory, TTL, last-refresh timestamp, page count, freshness flag.
+
+**Source pivot from JTC**: the docs system on `docs.facepunch.com` (Outline share-id `sbox-dev`) returned 404 on `shares.info` as of 2026-05-13 — JTC's installed C# crawler is non-functional today. The new home is `sbox.game/dev/doc/*`, a Blazor Server SPA. The canonical AI-discovery file at `sbox.game/llms.txt` (declared via `Llms-Txt:` in `robots.txt`) lists all 219 doc pages with their titles. **Every doc page is fetchable as raw Markdown by appending `.md` to its URL** — no HTML scraping, no Outline API, no auth.
+
+**Cache**: `<temp>/sbox-docs-cache/manifest.json`. Override with env `SBOX_DOCS_CACHE_DIR`. TTL 24 h (override with `SBOX_DOCS_CACHE_TTL` in seconds). First call after expiry triggers a lazy crawl (~30 s for the full 219 pages, 150 ms between fetches).
+
+**Implementation**: ~600 lines TS across `src/docs/{cache,fetcher,search}.ts` + `src/tools/docs.ts`. Zero new dependencies — hand-rolled TF-IDF index, native `fetch`, no HTML-to-Markdown library, no `cheerio`. Coverage verified end-to-end: **219/219 pages indexed**, 18 categories, sub-millisecond search latency once cached.
+
 
 ### Added — Tag management (S5)
 
@@ -63,15 +105,17 @@ The last S4 wrapper, `editor_scene_info`, landed as a new canonical + passthroug
 
 **Note on hot-reload latency:** when the live `claudebridge.editor.dll` doesn't pick up a `MyEditorMenu.cs` change, call `trigger_hotload` and allow ~15s for s&box to recompile the bridge addon. The smoke script's `live dispatch FAIL` branch will name the missing handler if recompile didn't land.
 
-### Tool count update (S4b + S4 closing)
+### Tool count update (S4b + S4 closing + S9 + S8 + S10 = full B.2 + bonus)
 
-| | Before | After |
-|---|---|---|
-| Canonical TS tools | 119 | **120** |
-| C# handlers | 108 | **109** |
-| JTC-compat aliases | 29 | **34** |
-| Runtime-registered total | 149 | **155** |
-| JTC parity coverage | 37/48 (77.1%) | **42/48 (87.5%)** |
+| | Before B.2 | After S4 closing | After S9 | After S8 | After S10 |
+|---|---|---|---|---|---|
+| Canonical TS tools | 119 | 120 | 124 | 126 | 126 (unchanged) |
+| C# handlers | 108 | 109 | 109 | 111 | **112** |
+| TS-only allowlist | 11 | 11 | 15 | 15 | **14** |
+| JTC-compat aliases | 29 | 34 | 34 | 34 | 34 (unchanged) |
+| Runtime-registered total | 149 | 155 | 159 | 161 | 161 (unchanged) |
+| JTC parity coverage | 37/48 (77.1%) | 42/48 (87.5%) | 46/48 (95.8%) | 48/48 (100%) | **48/48 (100%)** |
+| Working tools beyond JTC | 0 | 0 | 0 | 0 | **1** (real log capture) |
 
 All 34 JTC aliases verified working end-to-end via 4 positive smoke assertions covering identity (`editor_take_screenshot`), paramAdapter (`asset_browse_local`, `asset_search`), new-canonical (`editor_scene_info`), and localHandler (`get_server_status`).
 

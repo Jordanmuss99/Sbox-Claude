@@ -140,9 +140,21 @@ async function main() {
     fail(`missing aliases: ${missing.join(", ")}`);
   console.log(`all ${expectedAliases.length} JTC aliases present: ${expectedAliases.join(", ")}`);
 
-  if (tools.length !== 159)
-    fail(`expected 159 tools (124 canonical + 34 JTC aliases + 1 Lou rename), got ${tools.length}`);
-  console.log(`count check OK: ${tools.length} == 159`);
+  if (tools.length !== 161)
+    fail(`expected 161 tools (126 canonical + 34 JTC aliases + 1 Lou rename), got ${tools.length}`);
+  console.log(`count check OK: ${tools.length} == 161`);
+
+  // S10 — get_console_output moved from TS-only stub to C# handler
+  const consoleTool = tools.find((t) => t.name === "get_console_output");
+  if (!consoleTool) fail("S10: get_console_output not registered");
+  console.log(`S10 console capture present: get_console_output`);
+
+  // S8 — 2 execution tools must be registered (canonical names match JTC)
+  const execTools = ["console_run", "execute_csharp"];
+  const missingExec = execTools.filter((d) => !tools.some((t) => t.name === d));
+  if (missingExec.length > 0)
+    fail(`missing S8 execution tools: ${missingExec.join(", ")}`);
+  console.log(`S8 execution tools present: ${execTools.join(", ")}`);
 
   // S9 — 4 docs tools must be registered (no aliases, canonical names match JTC)
   const docsTools = [
