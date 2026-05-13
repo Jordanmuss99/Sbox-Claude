@@ -257,6 +257,9 @@ public static class ClaudeBridge
 		Register( "component_list",           new ComponentListHandler() );
 		Register( "component_remove",         new ComponentRemoveHandler() );
 
+		// ── Scene info (S4 closing, 2026-05-12) ────────────────────────────
+		Register( "get_scene_info",           new GetSceneInfoHandler() );
+
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
 
@@ -4609,6 +4612,38 @@ public class ComponentRemoveHandler : IBridgeHandler
 			count = matching.Length,
 			id,
 			component = typeName,
+		} );
+	}
+}
+
+// ───────── scene info (S4 closing, 2026-05-12) ─────────────────────────────────────────────────
+// get_scene_info: returns metadata about the currently-active editor scene
+// session — name, source resource path, dirty flag. Used by the JTC-compat
+// alias `editor_scene_info` (passthrough). Path is null for unsaved scenes;
+// dirty=true when the session has unsaved changes.
+// ──────────────────────────────────────────────────────────────────────────────
+
+public class GetSceneInfoHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		var session = SceneEditorSession.Active;
+		if ( session == null )
+			return Task.FromResult<object>( new { error = "No active scene editor session" } );
+
+		var scene = session.Scene;
+		if ( scene == null )
+			return Task.FromResult<object>( new { error = "Session has no active scene" } );
+
+		var source = scene.Source;
+		return Task.FromResult<object>( new {
+			name = scene.Name,
+			title = scene.Title,
+			path = source?.ResourcePath,
+			resourceName = source?.ResourceName,
+			dirty = scene.HasUnsavedChanges,
+			isPrefabSession = session.IsPrefabSession,
+			isPlaying = session.IsPlaying,
 		} );
 	}
 }

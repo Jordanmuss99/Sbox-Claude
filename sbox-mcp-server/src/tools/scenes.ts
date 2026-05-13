@@ -12,6 +12,23 @@ export function registerSceneTools(
 ): void {
   // ── list_scenes ──────────────────────────────────────────────────
   server.tool(
+    "get_scene_info",
+    "Get metadata about the currently-active editor scene: name, source resource path (null if unsaved), dirty flag, prefab-session flag, play state.",
+    {},
+    async () => {
+      const res = await bridge.send("get_scene_info");
+      if (!res.success) {
+        return { content: [{ type: "text", text: `Error: ${res.error}` }] };
+      }
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(res.data, null, 2) },
+        ],
+      };
+    }
+  );
+
+  server.tool(
     "list_scenes",
     "List all .scene files in the project with their paths and basic metadata",
     {},

@@ -120,6 +120,18 @@ async function main() {
     // S1/S2 catch-up (2026-05-12 — deferral closures)
     "editor_console_output",
     "file_list",
+    // S4a (2026-05-12 — adjacent wrappers, simple/adapter aliases)
+    "asset_fetch",
+    "asset_browse_local",
+    "component_get",
+    // S4b (2026-05-12 — hierarchy-walking wrappers via responseAdapter)
+    "scene_get_object",
+    "scene_list_objects",
+    // S4 closing (2026-05-12 — new C# canonical get_scene_info + passthrough alias)
+    "editor_scene_info",
+    // S3-deferral closure (2026-05-12 — localHandler infra + describe_type passthrough)
+    "get_server_status",
+    "sbox_get_api_type",
   ];
   const missing = expectedAliases.filter(
     (a) => !tools.some((t) => t.name === a),
@@ -128,9 +140,9 @@ async function main() {
     fail(`missing aliases: ${missing.join(", ")}`);
   console.log(`all ${expectedAliases.length} JTC aliases present: ${expectedAliases.join(", ")}`);
 
-  if (tools.length !== 144)
-    fail(`expected 144 tools (117 canonical + 26 JTC aliases + 1 Lou rename), got ${tools.length}`);
-  console.log(`count check OK: ${tools.length} == 144`);
+  if (tools.length !== 155)
+    fail(`expected 155 tools (120 canonical + 34 JTC aliases + 1 Lou rename), got ${tools.length}`);
+  console.log(`count check OK: ${tools.length} == 155`);
 
   // 3. verify alias description points at canonical
   const undoAlias = tools.find((t) => t.name === "editor_undo");
@@ -161,6 +173,129 @@ async function main() {
   } else {
     const text = callResp.result?.content?.[0]?.text ?? "";
     console.log(`live dispatch OK: editor_take_screenshot returned (${text.slice(0, 120)}...)`);
+  }
+
+  // 4b. adapter dispatch: call asset_browse_local(directory="scenes") and assert
+  //     the adapter rewrote `directory` → `path: "Assets/scenes"`. Without the
+  //     schema fix landed alongside this assertion, zod strips `directory`,
+  //     the adapter sees `{}` and falls back to `path: "Assets"`.
+  send({
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: {
+      name: "asset_browse_local",
+      arguments: { directory: "scenes" },
+    },
+  });
+  const adapterResp = await readMessage(15000);
+  if (adapterResp.error) {
+    console.warn(
+      `adapter dispatch warning: asset_browse_local → ${JSON.stringify(adapterResp.error).slice(0, 200)}`,
+    );
+  } else {
+    const text = adapterResp.result?.content?.[0]?.text ?? "";
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+    if (parsed?.path === "Assets/scenes") {
+      console.log(`adapter dispatch OK: asset_browse_local(directory="scenes") forwarded as path="Assets/scenes"`);
+    } else if (parsed?.path === "Assets") {
+      fail(`adapter dispatch FAIL: asset_browse_local(directory="scenes") got path="Assets" — zod stripped 'directory'; AliasSpec.schema is not being honored`);
+    } else {
+      console.warn(`adapter dispatch ambiguous: response.path=${parsed?.path ?? "<absent>"}, full text=${text.slice(0, 200)}`);
+    }
+  }
+
+  // 4c. adapter dispatch with envelope remap: asset_search(amount=2) was the
+  //     canonical diagnostic for the alias-schema bug — before the fix, `amount`
+  //     was stripped before the adapter saw it, so the canonical received no
+  //     maxResults override and defaulted to 10. Assert count<=2 to lock it in.
+  send({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: {
+      name: "asset_search",
+      arguments: { query: "terrain", amount: 2 },
+    },
+  });
+  const searchResp = await readMessage(15000);
+  if (searchResp.error) {
+    console.warn(
+      `adapter dispatch warning: asset_search → ${JSON.stringify(searchResp.error).slice(0, 200)}`,
+    );
+  } else {
+    const text = searchResp.result?.content?.[0]?.text ?? "";
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+    const count = parsed?.count;
+    if (typeof count === "number" && count <= 2) {
+      console.log(`adapter dispatch OK: asset_search(amount=2) returned count=${count} (≤ 2)`);
+    } else if (typeof count === "number" && count > 2) {
+      fail(`adapter dispatch FAIL: asset_search(amount=2) returned count=${count} (>2) — 'amount' was likely stripped before reaching the adapter; AliasSpec.schema regression`);
+    } else {
+      console.warn(`adapter dispatch ambiguous: asset_search count=${count}, full text=${text.slice(0, 200)}`);
+    }
+  }
+
+  // 4d. live dispatch via new C# canonical: editor_scene_info → get_scene_info.
+  //     Verifies (a) JTC alias is wired, (b) canonical TS tool dispatches via
+  //     bridge.send, (c) C# GetSceneInfoHandler is registered in the live
+  //     editor (hot-loaded after the MyEditorMenu.cs edit), (d) Scene.Source
+  //     and HasUnsavedChanges properties resolve at runtime.
+  send({
+    jsonrpc: "2.0",
+    id: 6,
+    method: "tools/call",
+    params: {
+      name: "editor_scene_info",
+      arguments: {},
+    },
+  });
+  const infoResp = await readMessage(15000);
+  if (infoResp.error) {
+    console.warn(
+      `live dispatch warning: editor_scene_info → ${JSON.stringify(infoResp.error).slice(0, 200)}`,
+    );
+  } else {
+    const text = infoResp.result?.content?.[0]?.text ?? "";
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+    if (parsed?.error) {
+      // Bridge returned a structured error — e.g. "unknown command" if the
+      // C# handler failed to compile/register.
+      fail(`live dispatch FAIL: editor_scene_info returned error="${parsed.error}" — GetSceneInfoHandler likely failed to hot-load in the editor`);
+    } else if (parsed && typeof parsed.dirty === "boolean" && "name" in parsed) {
+      console.log(`live dispatch OK: editor_scene_info returned name="${parsed.name}" dirty=${parsed.dirty} path=${parsed.path === null ? "null" : `"${parsed.path}"`}`);
+    } else {
+      console.warn(`live dispatch ambiguous: editor_scene_info response=${text.slice(0, 200)}`);
+    }
+  }
+
+  // 4e. localHandler dispatch: get_server_status canonical is TS-only (no C#),
+  //     so this exercises the new `localHandler` branch added in S3-deferral
+  //     closure. Asserts the response has the expected status-envelope shape
+  //     (proves dispatch skipped bridge.send and computed in-process).
+  send({
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/call",
+    params: { name: "get_server_status", arguments: {} },
+  });
+  const statusResp = await readMessage(15000);
+  if (statusResp.error) {
+    fail(`localHandler dispatch FAIL: get_server_status returned protocol error ${JSON.stringify(statusResp.error)}`);
+  } else {
+    const text = statusResp.result?.content?.[0]?.text ?? "";
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+    if (parsed && typeof parsed.connected === "boolean" && typeof parsed.host === "string" && typeof parsed.port === "number") {
+      console.log(`localHandler dispatch OK: get_server_status returned connected=${parsed.connected} ${parsed.host}:${parsed.port}`);
+    } else if (parsed?.error?.includes("unknown command")) {
+      fail(`localHandler dispatch FAIL: get_server_status reached bridge.send (got "unknown command") — localHandler branch was NOT taken`);
+    } else {
+      fail(`localHandler dispatch FAIL: get_server_status response missing expected fields. Got: ${text.slice(0, 200)}`);
+    }
   }
 
   // 5. verify the deprecation warning fired on stderr

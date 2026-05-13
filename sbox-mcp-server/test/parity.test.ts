@@ -180,7 +180,7 @@ describe("parity inventory sanity", () => {
     expect(ts.size).toBe(cs.size + tsOnly.size);
   });
 
-  it("inventory totals match expected post-S7", () => {
+  it("inventory totals match expected post-S3-deferral-closure", () => {
     expect({
       canonical_ts: ts.size,
       cs_handlers: cs.size,
@@ -189,12 +189,12 @@ describe("parity inventory sanity", () => {
       lou_renames: louKeys.size,
       runtime_registered_total: ts.size + jtcKeys.size + louKeys.size,
     }).toEqual({
-      canonical_ts: 119,
-      cs_handlers: 108,
+      canonical_ts: 120,
+      cs_handlers: 109,
       ts_only: 11,
-      jtc_aliases: 26,
+      jtc_aliases: 34,
       lou_renames: 1,
-      runtime_registered_total: 146,
+      runtime_registered_total: 155,
     });
   });
 });
