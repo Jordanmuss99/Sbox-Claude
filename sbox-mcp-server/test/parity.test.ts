@@ -180,7 +180,7 @@ describe("parity inventory sanity", () => {
     expect(ts.size).toBe(cs.size + tsOnly.size);
   });
 
-  it("inventory totals match expected post-v1.5.1 (describe_type inheritance walk)", () => {
+  it("inventory totals match expected post-v1.5.2 (library manager tools)", () => {
     expect({
       canonical_ts: ts.size,
       cs_handlers: cs.size,
@@ -189,12 +189,12 @@ describe("parity inventory sanity", () => {
       lou_renames: louKeys.size,
       runtime_registered_total: ts.size + jtcKeys.size + louKeys.size,
     }).toEqual({
-      canonical_ts: 141,
-      cs_handlers: 128,
+      canonical_ts: 146,
+      cs_handlers: 133,
       ts_only: 13,
       jtc_aliases: 34,
       lou_renames: 1,
-      runtime_registered_total: 176,
+      runtime_registered_total: 181,
     });
   });
 });

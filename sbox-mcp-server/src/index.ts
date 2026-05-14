@@ -48,6 +48,7 @@ import { registerAnimationTools } from "./tools/animation.js";
 import { registerNavMeshTools } from "./tools/navmesh.js";
 import { registerCameraTools } from "./tools/camera.js";
 import { registerGameObjectTreeTools } from "./tools/gameobject-tree.js";
+import { registerLibraryTools } from "./tools/library.js";
 import { EventWatcher } from "./transport/event-watcher.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
@@ -168,6 +169,7 @@ registerAnimationTools(server, bridge);
 registerNavMeshTools(server, bridge);
 registerCameraTools(server, bridge);
 registerGameObjectTreeTools(server, bridge);
+registerLibraryTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {

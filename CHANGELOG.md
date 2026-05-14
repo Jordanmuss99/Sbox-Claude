@@ -4,6 +4,46 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-05-15
+
+**Library Manager observability - 5 new tools to read/inspect/uninstall packages.**
+
+146 canonical TS tools / 133 C# handlers / 13 TS-only / 34 JTC-compat aliases + 1 Lou-rename = **181 runtime-registered total**. JTC parity unchanged at 48/48 (100%). Wire protocol unchanged (v1).
+
+### Added - 5 library tools
+
+All backed by `Editor.AssetSystem` static methods + `Sandbox.Package` instance APIs probed live this session:
+
+- **`list_installed_packages`** - returns referenced (pinned in .sbproj) + cloud-installed packages, de-duped by ident. Each entry: `{ ident, fullIdent, title, org, summary, packageType, fileSize, updated, created, isMounted, isCloudInstalled, isReferenced, isInstalled, versionId, fileCount, engineVersion }`. Wraps `AssetSystem.GetReferencedPackages()` + `GetInstalledPackages()`.
+
+- **`list_package_files(ident)`** - file paths inside an installed package. Wraps `AssetSystem.GetPackageFiles(Package)`. Returns `{ ident, title, mounted, count, files[] }`. Files are addressable via the existing `read_file` tool.
+
+- **`get_installed_package_info(ident, fetchRemote?)`** - full metadata dump for one ident: title, summary, description, tags, dependencies (the package's own `PackageReferences`), screenshots URL, vote counts, thumb URL, revision (`versionId`, `fileCount`, `totalSize`, `created`, `engineVersion`). `fetchRemote=true` triggers `Package.FetchAsync` when not locally cached. Returns 30+ fields.
+
+- **`package_uninstall(ident, deleteFolder?)`** - removes ident from `Config.PackageReferences` in `.sbproj` (direct JSON mutation, mirrors `asset_install_pinned`). With `deleteFolder=true`, also removes `Libraries/<ident>/` from disk. Idempotent - missing ident returns `removedFromReferences: false` with success=true. Note: the runtime mount may persist until the editor restarts.
+
+- **`library_manager_state(checkUpdates?)`** - compares each referenced package's local `Revision.VersionId` against the latest remote revision via `Package.FetchAsync`. Returns `{ referencedCount, updatesAvailable: [{ ident, currentVersionId, latestVersionId, latestCreated, latestSummary }], updateCheckErrors[] }`. Skipping updates check (`checkUpdates=false`) returns synchronously. "Recently viewed" is documented as not exposed by the s&box editor API.
+
+### Added - PackageLookup helper
+
+Shared static class for resolving `Package` by ident across the 5 handlers. Tries `Package.TryGetCached` first, then walks `GetReferencedPackages` + `GetInstalledPackages`, then optionally falls back to `Package.FetchAsync`. Matches on `FullIdent`, `Ident`, and `Org.Ident.Name` so callers can use any common form (`facepunch.flatgrass` or `flatgrass`).
+
+### Fixed - IRevision type qualifier
+
+`Package.IRevision` is a nested type, not bare `IRevision` in the global namespace. First compile attempt failed with CS0246; fixed by qualifying as `Package.IRevision rev = null;`.
+
+### Tool surface
+
+- Canonical TS tools: 141 -> **146** (+5)
+- C# handlers: 128 -> **133** (+5)
+- TS-only allowlist: 13 (unchanged)
+- Runtime-registered total: 176 -> **181**
+- JTC parity: still **48/48 (100%)**
+
+### Tests
+
+All 48 tests still pass. No new tests - the new tools are exercised live via raw IPC against asset.party data (7 real packages: facepunch.rust_trim, danivisit.woodenplankfloor, jammie.triplanar_grid, etc.).
+
 ## [1.5.1] - 2026-05-15
 
 **describe_type walks the inheritance chain + surfaces static properties + fields.**

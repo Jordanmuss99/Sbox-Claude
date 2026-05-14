@@ -357,6 +357,13 @@ public static class ClaudeBridge
 		Register( "create_particle_effect",  new CreateParticleEffectHandler() );
 		Register( "play_animation",          new PlayAnimationHandler() );
 		Register( "list_animations",         new ListAnimationsHandler() );
+
+		// v1.5.2 — Library Manager observability
+		Register( "list_installed_packages",     new ListInstalledPackagesHandler() );
+		Register( "list_package_files",          new ListPackageFilesHandler() );
+		Register( "get_installed_package_info",  new GetInstalledPackageInfoHandler() );
+		Register( "package_uninstall",           new PackageUninstallHandler() );
+		Register( "library_manager_state",       new LibraryManagerStateHandler() );
 		Register( "build_navmesh",           new BuildNavMeshHandler() );
 		Register( "query_navmesh",           new QueryNavMeshHandler() );
 		Register( "get_editor_camera",       new GetEditorCameraHandler() );
@@ -6508,5 +6515,377 @@ public class ListAnimationsHandler : IBridgeHandler
 		{
 			return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } );
 		}
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════
+// v1.5.2 — Library Manager observability (2026-05-15)
+// ════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Shared helpers for package handlers. Resolves Package by ident via TryGetCached,
+/// then via GetReferencedPackages / GetInstalledPackages, then via FetchAsync as
+/// last-resort network call.
+/// </summary>
+internal static class PackageLookup
+{
+	public static Package FindByIdent( string ident, bool fetchIfMissing = false )
+	{
+		if ( string.IsNullOrWhiteSpace( ident ) ) return null;
+
+		if ( Package.TryGetCached( ident, out var cached, allowPartial: true ) && cached != null )
+			return cached;
+
+		foreach ( var p in AssetSystem.GetReferencedPackages() )
+			if ( PackageMatches( p, ident ) ) return p;
+		foreach ( var p in AssetSystem.GetInstalledPackages() )
+			if ( PackageMatches( p, ident ) ) return p;
+
+		if ( fetchIfMissing )
+		{
+			try { return Package.FetchAsync( ident, partial: true ).GetAwaiter().GetResult(); }
+			catch { return null; }
+		}
+		return null;
+	}
+
+	public static bool PackageMatches( Package p, string ident )
+	{
+		if ( p == null ) return false;
+		if ( string.Equals( p.FullIdent, ident, StringComparison.OrdinalIgnoreCase ) ) return true;
+		if ( string.Equals( p.Ident, ident, StringComparison.OrdinalIgnoreCase ) ) return true;
+		// Also match "org.ident" style without version suffix
+		var orgIdent = $"{p.Org?.Ident}.{p.Ident}";
+		if ( string.Equals( orgIdent, ident, StringComparison.OrdinalIgnoreCase ) ) return true;
+		return false;
+	}
+
+	public static object SerializePackageSummary( Package p, bool isReferenced, bool isInstalled )
+	{
+		Package.IRevision rev = null;
+		try { rev = p.Revision; } catch { }
+		return new
+		{
+			ident = p.Ident,
+			fullIdent = p.FullIdent,
+			title = p.Title,
+			org = p.Org?.Ident,
+			summary = p.Summary,
+			packageType = p.TypeName,
+			fileSize = p.FileSize,
+			updated = p.Updated.ToString( "o" ),
+			created = p.Created.ToString( "o" ),
+			source = p.Source,
+			isMounted = SafeIsMounted( p ),
+			isCloudInstalled = SafeIsCloudInstalled( p ),
+			isReferenced,
+			isInstalled,
+			versionId = rev?.VersionId,
+			fileCount = rev?.FileCount,
+			engineVersion = rev?.EngineVersion,
+		};
+	}
+
+	public static bool SafeIsMounted( Package p ) { try { return p.IsMounted(); } catch { return false; } }
+	public static bool SafeIsCloudInstalled( Package p ) { try { return AssetSystem.IsCloudInstalled( p, exactVersion: false ); } catch { return false; } }
+}
+
+/// <summary>
+/// List all packages known to the editor: referenced (pinned in .sbproj) and
+/// cloud-installed (downloaded but not necessarily pinned). De-duped by ident.
+/// </summary>
+public class ListInstalledPackagesHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		try
+		{
+			var referenced = AssetSystem.GetReferencedPackages()?.ToList() ?? new List<Package>();
+			var installed = AssetSystem.GetInstalledPackages()?.ToList() ?? new List<Package>();
+
+			var refIdents = new HashSet<string>( referenced.Select( x => x.FullIdent ?? x.Ident ?? "" ), StringComparer.OrdinalIgnoreCase );
+			var instIdents = new HashSet<string>( installed.Select( x => x.FullIdent ?? x.Ident ?? "" ), StringComparer.OrdinalIgnoreCase );
+
+			var seen = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+			var packages = new List<object>();
+			foreach ( var pkg in referenced.Concat( installed ) )
+			{
+				var key = pkg.FullIdent ?? pkg.Ident ?? "";
+				if ( !seen.Add( key ) ) continue;
+				bool isRef = refIdents.Contains( key );
+				bool isInst = instIdents.Contains( key );
+				packages.Add( PackageLookup.SerializePackageSummary( pkg, isRef, isInst ) );
+			}
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					referencedCount = referenced.Count,
+					installedCount = installed.Count,
+					totalUnique = packages.Count,
+					packages,
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>
+/// List the files inside an installed/referenced package via
+/// AssetSystem.GetPackageFiles. Casts the IReadOnlyCollection elements
+/// defensively since the generic type isn't surfaced through TypeLibrary.
+/// </summary>
+public class ListPackageFilesHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		try
+		{
+			var ident = p.GetProperty( "ident" ).GetString();
+			var pkg = PackageLookup.FindByIdent( ident );
+			if ( pkg == null )
+				return Task.FromResult<object>( new { success = false, error = $"Package not found in installed/referenced set: {ident}", errorCode = "HANDLER_ERROR" as string } );
+
+			var raw = AssetSystem.GetPackageFiles( pkg );
+			if ( raw == null )
+				return Task.FromResult<object>( new { success = true, data = new { ident = pkg.FullIdent, count = 0, files = Array.Empty<string>() } } );
+
+			var files = new List<string>();
+			foreach ( var item in raw )
+			{
+				if ( item == null ) continue;
+				if ( item is string s ) files.Add( s );
+				else files.Add( item.ToString() );
+			}
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					ident = pkg.FullIdent,
+					title = pkg.Title,
+					mounted = PackageLookup.SafeIsMounted( pkg ),
+					count = files.Count,
+					files,
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>
+/// Full metadata dump for one installed/referenced package: title, description,
+/// dependencies (its own PackageReferences), screenshots, tags, revision details.
+/// </summary>
+public class GetInstalledPackageInfoHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		try
+		{
+			var ident = p.GetProperty( "ident" ).GetString();
+			var fetchRemote = p.TryGetProperty( "fetchRemote", out var fr ) && fr.GetBoolean();
+			var pkg = PackageLookup.FindByIdent( ident, fetchIfMissing: fetchRemote );
+			if ( pkg == null )
+				return Task.FromResult<object>( new { success = false, error = $"Package not found: {ident}", errorCode = "HANDLER_ERROR" as string } );
+
+			Package.IRevision rev = null;
+			try { rev = pkg.Revision; } catch { }
+
+			object revision = rev == null ? null : (object)new
+			{
+				versionId = rev.VersionId,
+				fileCount = rev.FileCount,
+				totalSize = rev.TotalSize,
+				summary = rev.Summary,
+				created = rev.Created.ToString( "o" ),
+				engineVersion = rev.EngineVersion,
+			};
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					ident = pkg.Ident,
+					fullIdent = pkg.FullIdent,
+					title = pkg.Title,
+					summary = pkg.Summary,
+					description = pkg.Description,
+					org = pkg.Org?.Ident,
+					packageType = pkg.TypeName,
+					tags = pkg.Tags ?? Array.Empty<string>(),
+					dependencies = pkg.PackageReferences ?? Array.Empty<string>(),
+					editorDependencies = pkg.EditorReferences ?? Array.Empty<string>(),
+					engineVersion = pkg.EngineVersion,
+					apiVersion = pkg.ApiVersion,
+					fileSize = pkg.FileSize,
+					url = pkg.Url,
+					thumb = pkg.Thumb,
+					updated = pkg.Updated.ToString( "o" ),
+					created = pkg.Created.ToString( "o" ),
+					source = pkg.Source,
+					isPublic = pkg.Public,
+					archived = pkg.Archived,
+					votesUp = pkg.VotesUp,
+					votesDown = pkg.VotesDown,
+					favourited = pkg.Favourited,
+					isMounted = PackageLookup.SafeIsMounted( pkg ),
+					isCloudInstalled = PackageLookup.SafeIsCloudInstalled( pkg ),
+					revision,
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>
+/// Remove a package ident from ProjectConfig.PackageReferences (direct .sbproj
+/// JSON mutation, mirrors AssetInstallPinnedHandler). Optionally deletes the
+/// Libraries/<ident>/ folder. The runtime mount is left alone — caller can
+/// restart the editor to fully unload.
+/// </summary>
+public class PackageUninstallHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		try
+		{
+			var ident = p.GetProperty( "ident" ).GetString();
+			if ( string.IsNullOrWhiteSpace( ident ) )
+				return Task.FromResult<object>( new { success = false, error = "ident is required", errorCode = "INVALID_PARAMS" as string } );
+			var deleteFolder = p.TryGetProperty( "deleteFolder", out var df ) && df.GetBoolean();
+
+			var rootPath = Project.Current.GetRootPath();
+			var sbproj = Directory.GetFiles( rootPath, "*.sbproj", SearchOption.TopDirectoryOnly ).FirstOrDefault();
+			if ( sbproj == null )
+				return Task.FromResult<object>( new { success = false, error = ".sbproj not found in project root", errorCode = "HANDLER_ERROR" as string } );
+
+			var rootNode = JsonNode.Parse( File.ReadAllText( sbproj ) ) as JsonObject;
+			if ( rootNode == null )
+				return Task.FromResult<object>( new { success = false, error = ".sbproj root is not a JSON object", errorCode = "HANDLER_ERROR" as string } );
+
+			bool removedFromRefs = false;
+			if ( rootNode.ContainsKey( "Config" ) && rootNode["Config"] is JsonObject cfg && cfg.ContainsKey( "PackageReferences" ) && cfg["PackageReferences"] is JsonArray refs )
+			{
+				for ( int i = refs.Count - 1; i >= 0; i-- )
+				{
+					var v = refs[i]?.GetValue<string>();
+					if ( string.Equals( v, ident, StringComparison.OrdinalIgnoreCase ) )
+					{
+						refs.RemoveAt( i );
+						removedFromRefs = true;
+					}
+				}
+				if ( removedFromRefs )
+				{
+					var json = rootNode.ToJsonString( new JsonSerializerOptions { WriteIndented = true } );
+					File.WriteAllText( sbproj, json, new UTF8Encoding( false ) );
+				}
+			}
+
+			bool folderDeleted = false;
+			string deletedPath = null;
+			if ( deleteFolder )
+			{
+				var librariesDir = Path.Combine( rootPath, "Libraries" );
+				if ( Directory.Exists( librariesDir ) )
+				{
+					foreach ( var sub in Directory.GetDirectories( librariesDir ) )
+					{
+						var name = Path.GetFileName( sub );
+						if ( string.Equals( name, ident, StringComparison.OrdinalIgnoreCase ) )
+						{
+							try { Directory.Delete( sub, recursive: true ); folderDeleted = true; deletedPath = sub; break; }
+							catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = $"Failed to delete folder: {ex.Message}", errorCode = "HANDLER_ERROR" as string, removedFromReferences = removedFromRefs } ); }
+						}
+					}
+				}
+			}
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					ident,
+					removedFromReferences = removedFromRefs,
+					folderDeleted,
+					deletedPath,
+					note = "Runtime mount may persist until editor restart. Use restart_editor or restart s&box manually to fully unload.",
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>
+/// Library Manager state — check for available updates against currently-referenced
+/// packages. Compares local Revision.VersionId against latest remote via FetchAsync.
+/// "Recently viewed" is not exposed by the s&box editor API and is therefore omitted.
+/// </summary>
+public class LibraryManagerStateHandler : IBridgeHandler
+{
+	public async Task<object> Execute( JsonElement p )
+	{
+		try
+		{
+			var checkUpdates = !p.TryGetProperty( "checkUpdates", out var cu ) || cu.GetBoolean();
+
+			var referenced = AssetSystem.GetReferencedPackages()?.ToList() ?? new List<Package>();
+			var updatesAvailable = new List<object>();
+			var updateCheckErrors = new List<object>();
+
+			if ( checkUpdates )
+			{
+				foreach ( var pkg in referenced )
+				{
+					try
+					{
+						var local = pkg.Revision;
+						var remote = await Package.FetchAsync( pkg.FullIdent ?? pkg.Ident, partial: true, useCache: false );
+						var remoteRev = remote?.Revision;
+						if ( local != null && remoteRev != null && remoteRev.VersionId > local.VersionId )
+						{
+							updatesAvailable.Add( new
+							{
+								ident = pkg.FullIdent,
+								title = pkg.Title,
+								currentVersionId = local.VersionId,
+								latestVersionId = remoteRev.VersionId,
+								latestCreated = remoteRev.Created.ToString( "o" ),
+								latestSummary = remoteRev.Summary,
+							} );
+						}
+					}
+					catch ( Exception ex )
+					{
+						updateCheckErrors.Add( new { ident = pkg.FullIdent, error = ex.Message } );
+					}
+				}
+			}
+
+			return new
+			{
+				success = true,
+				data = new
+				{
+					referencedCount = referenced.Count,
+					updatesChecked = checkUpdates,
+					updatesAvailableCount = updatesAvailable.Count,
+					updatesAvailable,
+					updateCheckErrors,
+					note = "Recently-viewed packages are not exposed by the s&box editor API and are not included.",
+				}
+			};
+		}
+		catch ( Exception ex ) { return new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string }; }
 	}
 }
