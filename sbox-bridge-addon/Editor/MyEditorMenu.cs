@@ -4422,6 +4422,13 @@ public class PlaceAlongPathHandler : IBridgeHandler
 // ───────── describe_type ─────────────────────────────────────────────────
 public class DescribeTypeHandler : IBridgeHandler
 {
+	// v1.5.1 - walks base-type chain so inherited members surface (e.g. Scene.GetAllObjects from GameObject).
+	// Adds BindingFlags.Static to properties (Connection.All was invisible before). Each member is
+	// tagged with declaredIn (origin type name) and isStatic. Adds fields[] and baseTypeChain[].
+	// Static properties resolve isStatic via the getter or setter's IsStatic flag - properties don't
+	// have IsStatic directly. Methods cap raised to 250 (Scene + GameObject + Object easily passes 80).
+	const BindingFlags BF_ALL = BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
 	public Task<object> Execute( JsonElement p )
 	{
 		var name = p.TryGetProperty( "name", out var n ) ? n.GetString() : null;
@@ -4448,34 +4455,96 @@ public class DescribeTypeHandler : IBridgeHandler
 
 		if ( targetType == null ) return Task.FromResult<object>( new { error = $"Type '{name}' not found" } );
 
+		// Build the inheritance ladder (target -> base -> base -> object).
+		var chain = new List<Type>();
+		var cur = targetType;
+		while ( cur != null && cur != typeof( object ) )
+		{
+			chain.Add( cur );
+			cur = cur.BaseType;
+		}
+
 		var properties = new List<object>();
-		foreach ( var pi in targetType.GetProperties( BindingFlags.Public | BindingFlags.Instance ) )
+		var seenProps = new HashSet<string>();
+		foreach ( var ty in chain )
 		{
-			properties.Add( new
+			foreach ( var pi in ty.GetProperties( BF_ALL ) )
 			{
-				name = pi.Name,
-				type = pi.PropertyType.Name,
-				canRead = pi.CanRead,
-				canWrite = pi.CanWrite
-			} );
+				if ( !seenProps.Add( pi.Name ) ) continue;
+				var accessor = pi.GetMethod ?? pi.SetMethod;
+				bool isStatic = accessor?.IsStatic ?? false;
+				properties.Add( new
+				{
+					name = pi.Name,
+					type = pi.PropertyType.Name,
+					canRead = pi.CanRead,
+					canWrite = pi.CanWrite,
+					isStatic,
+					declaredIn = ty.Name,
+				} );
+			}
 		}
 
+		var fields = new List<object>();
+		var seenFields = new HashSet<string>();
+		foreach ( var ty in chain )
+		{
+			foreach ( var fi in ty.GetFields( BF_ALL ) )
+			{
+				if ( !seenFields.Add( fi.Name ) ) continue;
+				fields.Add( new
+				{
+					name = fi.Name,
+					type = fi.FieldType.Name,
+					isStatic = fi.IsStatic,
+					isReadonly = fi.IsInitOnly,
+					declaredIn = ty.Name,
+				} );
+			}
+		}
+
+		// Methods: walk chain; dedupe by (name + parameter signature) so an override on the derived
+		// type wins over the base declaration. Cap at 250 total to keep the response sane.
 		var methods = new List<object>();
-		foreach ( var m in targetType.GetMethods( BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static ).Take( 80 ) )
+		var seenSigs = new HashSet<string>();
+		foreach ( var ty in chain )
 		{
-			if ( m.IsSpecialName ) continue;
-			var pars = string.Join( ", ", m.GetParameters().Select( pp => $"{pp.ParameterType.Name} {pp.Name}" ) );
-			methods.Add( new
+			foreach ( var m in ty.GetMethods( BF_ALL ) )
 			{
-				name = m.Name,
-				returns = m.ReturnType.Name,
-				signature = $"{m.ReturnType.Name} {m.Name}({pars})",
-				isStatic = m.IsStatic
-			} );
+				if ( m.IsSpecialName ) continue;
+				var pars = string.Join( ", ", m.GetParameters().Select( pp => $"{pp.ParameterType.Name} {pp.Name}" ) );
+				var sig = $"{m.Name}({pars})";
+				if ( !seenSigs.Add( sig ) ) continue;
+				methods.Add( new
+				{
+					name = m.Name,
+					returns = m.ReturnType.Name,
+					signature = $"{m.ReturnType.Name} {sig}",
+					isStatic = m.IsStatic,
+					declaredIn = ty.Name,
+				} );
+				if ( methods.Count >= 250 ) break;
+			}
+			if ( methods.Count >= 250 ) break;
 		}
 
-		var events = targetType.GetEvents( BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static )
-			.Select( e => new { name = e.Name, type = e.EventHandlerType?.Name } ).ToList();
+		var events = new List<object>();
+		var seenEvents = new HashSet<string>();
+		foreach ( var ty in chain )
+		{
+			foreach ( var e in ty.GetEvents( BF_ALL ) )
+			{
+				if ( !seenEvents.Add( e.Name ) ) continue;
+				var addMethod = e.GetAddMethod( true );
+				events.Add( new
+				{
+					name = e.Name,
+					type = e.EventHandlerType?.Name,
+					isStatic = addMethod?.IsStatic ?? false,
+					declaredIn = ty.Name,
+				} );
+			}
+		}
 
 		var attrs = targetType.GetCustomAttributes( false ).Select( a => a.GetType().Name ).ToList();
 
@@ -4484,12 +4553,21 @@ public class DescribeTypeHandler : IBridgeHandler
 			name = targetType.Name,
 			fullName = targetType.FullName,
 			baseType = targetType.BaseType?.Name,
+			baseTypeChain = chain.Skip( 1 ).Select( t => t.Name ).ToArray(),
 			isAbstract = targetType.IsAbstract,
 			isComponent = typeof( Component ).IsAssignableFrom( targetType ),
 			properties,
+			fields,
 			methods,
 			events,
-			attributes = attrs
+			attributes = attrs,
+			memberCount = new
+			{
+				properties = properties.Count,
+				fields = fields.Count,
+				methods = methods.Count,
+				events = events.Count,
+			},
 		} );
 	}
 }

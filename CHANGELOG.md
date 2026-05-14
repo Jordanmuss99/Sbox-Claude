@@ -4,6 +4,41 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-05-15
+
+**describe_type walks the inheritance chain + surfaces static properties + fields.**
+
+Same tool surface counts as v1.5.0 (141 TS / 128 C# / 13 TS-only / 176 runtime-registered). No new tools - just a meaningful fix to an existing one. JTC parity unchanged at 48/48.
+
+### Fixed - describe_type
+
+Two real bugs surfaced by a session that tried to use `Connection.All` (static) and `Scene.GetAllObjects(bool)` (inherited from `GameObject`):
+
+1. **`BindingFlags.Static` was missing from properties enumeration.** `Connection.All`, `Connection.Local`, `Connection.Host` were all invisible to the probe even though they compile cleanly. Now included.
+2. **80-method cap dropped inherited members.** `Scene` inherits ~50 methods from `GameObject` plus its own ~30; the 80-cap silently truncated. Cap raised to 250. Combined with the inheritance walk (below), the full member surface is now reachable.
+
+### Added - describe_type response shape (backward-compatible)
+
+- `baseTypeChain: string[]` - the inheritance ladder from immediate parent up to (but not including) `System.Object`.
+- `fields: [{ name, type, isStatic, isReadonly, declaredIn }]` - was missing entirely; static fields are how some APIs expose constants (e.g. `BindingFlags`).
+- Each property / field / method / event now has `declaredIn: string` (the type that declared it) and `isStatic: bool`.
+- New `memberCount: { properties, fields, methods, events }` summary.
+
+Members are de-duplicated when an override or new-modifier shadows a base declaration; the derived version wins.
+
+Verification on the two reported cases:
+
+- `Connection` now surfaces `All`, `Local`, `Host` (static properties) + `Find(Guid)` (static method). Was missing all 4.
+- `Scene` jumps from 38 props/80 methods to 66 props/79 methods/1 field, with `GetAllObjects(Boolean)` correctly tagged `declaredIn: GameObject`. `baseTypeChain` reports `["GameObject"]`.
+
+### Added - sbox-game-dev SKILL.md section
+
+"TypeLibrary is informative, NOT authoritative" - explains the caveat, points at `sbox.game/api` and `get_compile_errors` as authoritative fallbacks. Updated in both `~/.claude/skills/sbox-game-dev/SKILL.md` and `~/.agents/skills/sbox-game-dev/SKILL.md`.
+
+### Tests
+
+All 48 tests still pass. No new tests - the change is a server-side reflection refactor exercised live against the bridge.
+
 ## [1.5.0] - 2026-05-15
 
 **list_animations ships — the v1.4.0 deferred tool, probe-verified and live-validated.**

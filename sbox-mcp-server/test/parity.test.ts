@@ -180,7 +180,7 @@ describe("parity inventory sanity", () => {
     expect(ts.size).toBe(cs.size + tsOnly.size);
   });
 
-  it("inventory totals match expected post-v1.5.0 (list_animations added)", () => {
+  it("inventory totals match expected post-v1.5.1 (describe_type inheritance walk)", () => {
     expect({
       canonical_ts: ts.size,
       cs_handlers: cs.size,
