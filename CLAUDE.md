@@ -2,14 +2,38 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: 126 canonical TS tools / 112 C# handlers / 14 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 161 runtime-registered total)
+## Status: 136 canonical TS tools / 121 C# handlers / 15 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 171 runtime-registered total)
 
-**Last updated:** 2026-05-13
+**Last updated:** 2026-05-14
 **Bridge:** File-based IPC ✅ working on main thread
-**Handlers:** 112 compiled and registered (TS canonicals minus 14 TS-only = 112 paired with C#)
+**Handlers:** 121 compiled and registered (TS canonicals minus 15 TS-only = 121 paired with C#)
 **JTC parity:** **48 / 48 (100%)** 🎉 — full parity 2026-05-13 (S8 + S9). **S10 bonus**: real `get_console_output` (NLog capture beyond JTC's manual-buffer approach).
 **Not implementable:** 8 tools (no s&box API exists — see "Known Issues"). These overlap with the TS-only allowlist. S10 (2026-05-13) moved `get_console_output` out of this list — it now works via NLog `MemoryTarget` attached by reflection.
 
+### What's new in v1.3.0 (2026-05-14)
+
+**Editor responsiveness release.** Three coordinated efforts shipped:
+
+- **Phase 0 - Response envelope migration**. `ProcessRequest()` now inspects handler results and propagates `success: false` to the top-level response. Previously handler failures were silently buried in `data`, making error detection unreliable across all 112 handlers. New `IsHandlerFailure()` shared method handles null/bare-error/JsonElement/reflection cases. New `errorCode` field on all error envelopes (`BRIDGE_DISCONNECTED`/`BRIDGE_TIMEOUT`/`HANDLER_NOT_FOUND`/`HANDLER_ERROR`/`INVALID_PARAMS`). New `ExecuteCommand()` internal dispatch seam. New `PingHandler` + `bridge.measureLatency()` for real round-trip latency.
+- **Phase 2 - Push-based event capture**. New `BridgeEventDispatcher` hooks 5 editor events (`scene.open`, `scene.play`, `scene.stop`, `scene.saved`, `hammer.selection.changed`) and writes to `events.json` JSON-lines file. Atomic ring buffer with `File.Move(overwrite:true)` compaction. Session ID + monotonic eventId for cross-restart isolation. New TS `get_editor_events` tool reads via `fs.watch` with 2s poll fallback.
+- **Phase 3 v2 - 8 API-probe-verified tools**. After v1 (4b01e98) authored handlers against non-existent APIs, v2 probes every API via `sbox_describe_type` BEFORE writing handlers. Ships: `create_light` / `set_light_properties` (PointLight/SpotLight/DirectionalLight - not `*Component`), `create_particle_effect` (ParticleEffect - not ParticleSystem), `play_animation` (SkinnedModelRenderer.Set), `build_navmesh` / `query_navmesh` (scene.NavMesh), `get_editor_camera` / `set_editor_camera` (with fallback CameraComponent scan).
+
+**Latency**: 60-120 ms baseline -> avg 29 ms, min 14 ms. C# timer 50 ms -> 20 ms. `get_bridge_status` now reports real IPC ping (was local `status.json` read).
+
+**Phase 3 v2 API probe findings** are committed to `.omc/research/phase3-api-probes.md`. The corrected APIs vs v1 attempts:
+
+| v1 (broken) | v2 (verified) |
+|---|---|
+| `PointLightComponent` etc. | `Sandbox.PointLight` etc. (Light base class) |
+| `ParticleSystem` (as component) | `Sandbox.ParticleEffect` |
+| `SceneView.Camera` | `Scene.Camera` (+ fallback scan for `CameraComponent`) |
+| `Game.Save`/`Game.Load` | doesn't exist; v3 will use `Component.Serialize/Deserialize` |
+| `InputSystem.GetActions` | abstract, no API; use `read_file` on `.inputactions` |
+| `NavMesh.Build()` | `scene.NavMesh.Generate(scene.PhysicsWorld)` |
+| `BridgeLogTarget.GetEntries()` | (deferred - use `get_console_output {severity:"error"}`) |
+| `MapBuilder.PaintMaterial` | project-specific - use `invoke_button` + `set_property` |
+
+---
 ### What's new in this update
 
 - **S10 — Real console capture (bonus, beyond JTC parity)**: `get_console_output` now works for real. Subclasses `NLog.Targets.MemoryTarget` via runtime reflection on `AppDomain.CurrentDomain.GetAssemblies()` (NLog namespace is loaded at runtime but not compile-visible in s&box's sandbox — same blocker JTC hit). Surfaces the full editor log stream including `[engine/MaterialSystem]`, `[MCP Docs]`, `[SboxBridge]`, controller-detect lines. Parses NLog's default `${longdate}|${level}|${logger}|${message}` layout back into structured records. JTC's equivalent (`ConsoleCapture`) is a manual `AddEntry()` buffer and shows only lines they explicitly logged.

@@ -49,7 +49,7 @@ Communication uses **file-based IPC** through `%TEMP%/sbox-bridge-ipc/`. The MCP
 
 WebSocket is not used — s&box's sandboxed C# environment does not allow `System.Net`.
 
-## Tools (78 working, 89 defined)
+## Tools (121 working C# handlers + 15 TS-only = 136 canonical, plus 34 JTC aliases)
 
 | Category | Tools |
 |----------|-------|

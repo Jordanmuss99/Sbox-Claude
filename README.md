@@ -66,7 +66,7 @@ In s&box, go to **View → Claude Bridge** to open the dock panel. This is requi
 "Create a new script called EnemyAI with patrol behavior"
 ```
 
-## Available Tools (109 defined)
+## Available Tools (136 canonical defined)
 
 > **2026-04-26:** Added 21 tools — generic component-button invocation, map editing (terrain/cave/forest), heightmap sculpt brushes, and type-discovery helpers (Game.TypeLibrary reflection). See `World Gen`, `Map Edit`, `Caves`, `Forest`, `Placement`, and `Discovery` rows below.
 
@@ -109,6 +109,13 @@ This means **the tools work on any project** that follows the same component pat
 
 The `Discovery` tools surface `Game.TypeLibrary` reflection so Claude can look up real method signatures, properties, and events instead of guessing API names. Use `describe_type "MeshComponent"` before writing code that touches it.
 
+| **Lighting** | `create_light`, `set_light_properties` |
+| **VFX** | `create_particle_effect` |
+| **Animation** | `play_animation` (drives anim-graph parameter on SkinnedModelRenderer) |
+| **NavMesh** | `build_navmesh`, `query_navmesh` |
+| **Editor Camera** | `get_editor_camera`, `set_editor_camera` |
+| **Events** | `get_editor_events` (push-based scene/selection/play events) |
+| **Bridge Health** | `ping` (real IPC round-trip latency) |
 ### Not Implementable (no s&box API exists)
 `pause_play`, `resume_play`, `get_console_output`, `get_compile_errors`, `clear_console`, `build_project`, `get_build_status`, `clean_build`, `export_project`, `prepare_publish`
 

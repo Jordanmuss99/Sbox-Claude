@@ -4,6 +4,78 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-14
+
+**Editor responsiveness release: top-level error envelope migration, push-based event capture, 8 new game-dev tools across lighting/VFX/animation/navmesh/camera, ~3x lower latency.**
+
+### Added - Top-level response envelope (Phase 0, CRITICAL)
+
+`ProcessRequest()` now inspects handler results for failure state and propagates them to the top-level response. Previously, handlers returning `{ success: false, error: "..." }` were silently wrapped as `{ success: true, data: { success: false, ... } }`, hiding failures from the TS layer. This was a system-wide silent-failure-generator across 112 handlers.
+
+- New shared `IsHandlerFailure(result)` method on `ClaudeBridge`. Handles 4 cases that the naive code missed: (a) `null` handler results -> `NullReferenceException`, (b) bare `{ error = "..." }` objects without `success` field, (c) `JsonElement`-typed returns, (d) anonymous-typed returns via reflection. Used by both `ProcessRequest` AND `BatchHandler` to guarantee consistent error detection.
+- New `ExecuteCommand(command, params)` internal dispatch seam on `ClaudeBridge`. Single canonical path for handler lookup + exception catching. Used by both `ProcessRequest` (single requests) and the planned batch path.
+- New `errorCode` field on `BridgeResponse` (TS) and all error envelopes (C#). Values: `BRIDGE_DISCONNECTED`, `BRIDGE_TIMEOUT`, `HANDLER_NOT_FOUND`, `HANDLER_ERROR`, `INVALID_PARAMS`.
+- New `PingHandler` for real IPC round-trip latency measurement. Replaces the local-`status.json`-read `ping()` method (now deprecated, kept for back-compat). `measureLatency()` sends a `ping` command through the bridge and times the actual response.
+
+**112-handler audit**: every `return Task.FromResult<object>(new { error = ... })` updated to include `success = false, errorCode = "HANDLER_ERROR"`. After Phase 0 envelope migration, these become visible top-level failures. 261 `success = false` instances now in `MyEditorMenu.cs`.
+
+### Added - Push-based event capture (Phase 2)
+
+New event system that surfaces editor events to the TS side via a JSON-lines file with `fs.watch` push detection.
+
+- New `BridgeEventDispatcher` static class hooks 5 editor events: `scene.open`, `scene.play`, `scene.stop`, `scene.saved`, `hammer.selection.changed`. Each writes a JSON line to `<ipc-dir>/events.json`.
+- Atomic ring buffer at 1000 entries / 500 KB. Compaction writes to `events_compact.tmp` then `File.Move(..., overwrite: true)` for atomic replacement. Node side tolerates partial reads / unparseable lines.
+- Session isolation via `sessionId` GUID (regenerated on every `Initialize()` call) and monotonic `eventId` counter. Survives bridge restarts without stale-event pollution.
+- New `src/transport/event-watcher.ts` reads events.json via `fs.watch` with 2s poll fallback. Tolerates Windows temp-dir `fs.watch` unreliability.
+- New `get_editor_events` MCP tool (TS-only) - filter by `sinceId` / `sessionId` / `types`. Returns newest-first with limit.
+
+### Added - 8 game-dev tools (Phase 3 v2)
+
+All authored after API probes via `sbox_describe_type` / `sbox_search_types` confirmed the real APIs. Replaces a v1 attempt that used non-existent APIs (`SceneView.Camera`, `Game.Save/Load`, `PointLightComponent`, etc.).
+
+- **Lighting**: `create_light` (PointLight / SpotLight / DirectionalLight via `Sandbox.Light` hierarchy - not `*LightComponent`), `set_light_properties` (color, shadows, shadowBias).
+- **VFX**: `create_particle_effect` (uses `Sandbox.ParticleEffect`, NOT `ParticleSystem` which is a resource).
+- **Animation**: `play_animation` (uses `SkinnedModelRenderer.Set(name, value)` to drive named anim-graph parameters; type-detects bool/int/float).
+- **NavMesh**: `build_navmesh` (calls `scene.NavMesh.Generate(scene.PhysicsWorld)` async), `query_navmesh` (calls `scene.NavMesh.GetClosestPoint(position, radius)`, returns nullable Vector3).
+- **Camera**: `get_editor_camera`, `set_editor_camera` (uses `scene.Camera` with fallback to `scene.GetAllComponents<CameraComponent>()` scanning - the editor scene's `Camera` property is null but an `editor_camera` GO with a `CameraComponent` exists).
+
+**Probe research**: live findings in `.omc/research/phase3-api-probes.md`. v1 (4b01e98) was 13 tools using wrong APIs; v2 ships 8 verified tools. 5 v1 tools dropped from scope (Input - no exposed API, snapshot_scene - complex graph serialization, terrain material - project-specific, list_animations - needs deeper probe, get_runtime_errors - just use `get_console_output {severity:"error"}`).
+
+### Changed - Transport latency
+
+- `Timer( ReadRequestFiles, null, 500, 50 )` -> `( ..., 500, 20 )`. C# poll interval reduced from 50 ms to 20 ms.
+- `bridge.measureLatency()` replaces `bridge.ping()` in `get_bridge_status`. Returns real IPC round-trip time (was local filesystem stat).
+
+**Measured**: 5-sample ping latency goes from 60-120 ms baseline to **min 14 ms / avg 29 ms** (target was <40 ms). Driven by 20 ms C# timer + tighter request/response handling.
+
+### Fixed - OnSelectionChanged hook
+
+The `hammer.selection.changed` event hook crashed because `Selection` returns `IEnumerable<object>` not `IEnumerable<GameObject>`. Fixed: `sel?.OfType<GameObject>().Select(g => g.Id.ToString())`.
+
+### Tool surface
+
+- Canonical TS tools: 126 -> 136 (+10: 8 Phase 3 v2 + 1 ping + 1 get_editor_events)
+- C# handlers: 112 -> 121 (+9: 8 Phase 3 v2 + 1 ping; get_editor_events is TS-only)
+- TS-only allowlist: 14 -> 15 (+1: get_editor_events)
+- Total runtime-registered: 161 -> 171
+- JTC parity: still 48/48 (100%)
+
+### Reverted - Phase 3 v1 (4b01e98)
+
+Stripped 13 v1 tool implementations and 13 Phase 3 TS files. v1 used the following non-existent or wrong APIs:
+- `PointLightComponent`/`SpotLightComponent`/`DirectionalLightComponent` (real: `PointLight`/`SpotLight`/`DirectionalLight`, no Component suffix)
+- `SceneView.Camera` (not in TypeLibrary - editor camera lives in scene's `editor_camera` GameObject)
+- `Game.Save`/`Game.Load` (don't exist; would need custom serialization)
+- `InputSystem.GetActions` (`NativeEngine.InputSystem` is abstract with no exposed properties)
+- `MapBuilder.PaintMaterial` (`MapBuilder` is project-specific, not in core engine)
+- `NavMesh.Build()` (real: `scene.NavMesh.Generate(physicsWorld)`)
+- `ParticleSystem` as a component (real: `ParticleEffect`; `ParticleSystem` is a resource)
+- `BridgeLogTarget.GetEntries()` (wrong method name)
+
+Lesson: any Phase 3-style "broad tool surface expansion" must follow Phase 3.0 (the "API Probe Gate") in the original plan - probe APIs live BEFORE authoring handlers. See `.omc/specs/sbox-claude-improvements-ralplan.md` for the hyperplan-audited plan structure.
+
+## [1.2.0] - 2026-05-13
+
 **JTC parity sprints (B.2): 14 new canonical tools + 34 JTC-compat aliases. Coverage of JTC `sbox-mcp` tool surface: 48/48 (100%). 🎉 Full parity achieved 2026-05-13. Bonus: S10 lands real console capture beyond JTC's manual-buffer approach.**
 
 ### Added — Real console capture (S10, bonus)
