@@ -42,13 +42,6 @@ import { registerJtcAliasTools } from "./tools/jtc-aliases.js";
 import { registerDocsTools } from "./tools/docs.js";
 import { registerExecutionTools } from "./tools/execution.js";
 import { registerEditorEventsTools } from "./tools/editor-events.js";
-import { registerLightingTools } from "./tools/lighting.js";
-import { registerVfxTools } from "./tools/vfx.js";
-import { registerCameraTools } from "./tools/camera.js";
-import { registerNavMeshTools } from "./tools/navmesh.js";
-import { registerAnimationTools } from "./tools/animation.js";
-import { registerInputTools } from "./tools/input.js";
-import { registerGameStateTools } from "./tools/gamestate.js";
 import { EventWatcher } from "./transport/event-watcher.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
@@ -134,6 +127,7 @@ const bridge = new BridgeClient(
   parseInt(process.env.SBOX_BRIDGE_PORT ?? "29015", 10)
 );
 const eventWatcher = new EventWatcher( bridge.getIpcDir() );
+eventWatcher.start();
 
 
 // Register all tools
@@ -162,13 +156,6 @@ registerDocsTools(server);
 registerExecutionTools(server, bridge);
 registerJtcAliasTools(server, bridge);
 registerEditorEventsTools(server, eventWatcher);
-registerLightingTools(server, bridge);
-registerVfxTools(server, bridge);
-registerCameraTools(server, bridge);
-registerNavMeshTools(server, bridge);
-registerAnimationTools(server, bridge);
-registerInputTools(server, bridge);
-registerGameStateTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {
