@@ -110,4 +110,32 @@ export function registerConsoleTools(
       };
     }
   );
+
+  // ── get_runtime_errors (Phase 3) ────────────────────────────────
+  server.tool(
+    "get_runtime_errors",
+    "Query runtime errors from the console during play mode (filters NLog to Error/Fatal)",
+    {
+      count: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(50)
+        .describe("Maximum number of error entries to return"),
+    },
+    async ({ count }) => {
+      const res = await bridge.send("get_runtime_errors", { count });
+      if (!res.success)
+        return { content: [{ type: "text", text: `Error: ${res.error}` }] };
+      const data = res.data as { count: number; entries: Array<{ timestamp: string; level: string; logger: string; message: string }> };
+      if (data.entries.length === 0)
+        return { content: [{ type: "text", text: "No runtime errors found." }] };
+      const lines = [`${data.count} runtime error(s):`, ""];
+      for (const e of data.entries) {
+        lines.push(`[${e.timestamp}] ${e.level} <${e.logger}>: ${e.message}`);
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    }
+  );
 }

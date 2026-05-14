@@ -278,6 +278,21 @@ public static class ClaudeBridge
 		try { BridgeLogTarget.EnsureAttached(); }
 		catch ( Exception ex ) { Log.Warning( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
 
+		// Phase 3 — Tool Surface Expansion (2026-05-14) ──────────────────
+		Register( "create_light",            new CreateLightHandler() );
+		Register( "set_light_properties",    new SetLightPropertiesHandler() );
+		Register( "create_particle_system",  new CreateParticleSystemHandler() );
+		Register( "get_runtime_errors",      new GetRuntimeErrorsHandler() );
+		Register( "get_editor_camera",       new GetEditorCameraHandler() );
+		Register( "set_editor_camera",       new SetEditorCameraHandler() );
+		Register( "build_navmesh",           new BuildNavMeshHandler() );
+		Register( "query_navmesh",           new QueryNavMeshHandler() );
+		Register( "list_animations",         new ListAnimationsHandler() );
+		Register( "play_animation",          new PlayAnimationHandler() );
+		Register( "list_input_actions",      new ListInputActionsHandler() );
+		Register( "snapshot_scene",          new SnapshotSceneHandler() );
+		Register( "restore_scene",           new RestoreSceneHandler() );
+
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
 
@@ -5234,5 +5249,245 @@ public class PingHandler : IBridgeHandler
 		} );
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 3 — Tool Surface Expansion handlers
+// ═══════════════════════════════════════════════════════════════════
+
+/// <summary>Create a light component (point, spot, or directional) on a GameObject.</summary>
+public class CreateLightHandler : IBridgeHandler
+{
+	public async Task<object> Execute( JsonElement parameters )
+	{
+		var id = parameters.GetProperty( "id" ).GetString();
+		var lightType = parameters.TryGetProperty( "lightType", out var lt ) ? lt.GetString() ?? "point" : "point";
+		var go = SceneEditorSession.Active?.Scene?.FindSceneObject( new Guid( id ) );
+		if ( go == null ) return new { success = false, error = $"GameObject not found: {id}", errorCode = "HANDLER_ERROR" as string };
+
+		if ( lightType == "spot" ) { var c = go.AddComponent<SpotLightComponent>(); return ApplyLightProps( c, parameters ); }
+		if ( lightType == "directional" ) { var c = go.AddComponent<DirectionalLightComponent>(); return ApplyLightProps( c, parameters ); }
+		var pt = go.AddComponent<PointLightComponent>();
+		return ApplyLightProps( pt, parameters );
+	}
+
+	private object ApplyLightProps( dynamic light, JsonElement p )
+	{
+		try {
+			if ( p.TryGetProperty( "color", out var c ) ) light.Color = Color.Parse( c.GetString() ?? "#ffffff" );
+			if ( p.TryGetProperty( "intensity", out var i ) ) light.Intensity = i.GetSingle();
+			if ( p.TryGetProperty( "range", out var r ) ) light.Range = r.GetSingle();
+			return new { success = true, data = new { id = light.GameObject.Id.ToString(), lightType = light.GetType().Name } };
+		} catch ( Exception ex ) { return new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string }; }
+	}
+}
+
+/// <summary>Modify properties on an existing LightComponent.</summary>
+public class SetLightPropertiesHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var id = parameters.GetProperty( "id" ).GetString();
+		var go = SceneEditorSession.Active?.Scene?.FindSceneObject( new Guid( id ) );
+		if ( go == null ) return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {id}", errorCode = "HANDLER_ERROR" as string } );
+		var light = go.GetComponent<PointLightComponent>() ?? go.GetComponent<SpotLightComponent>() ?? go.GetComponent<DirectionalLightComponent>() as object;
+		if ( light == null ) return Task.FromResult<object>( new { success = false, error = "No LightComponent found on this GameObject", errorCode = "HANDLER_ERROR" as string } );
+		try {
+			if ( parameters.TryGetProperty( "color", out var c ) ) ((dynamic)light).Color = Color.Parse( c.GetString() ?? "#ffffff" );
+			if ( parameters.TryGetProperty( "intensity", out var i ) ) ((dynamic)light).Intensity = i.GetSingle();
+			if ( parameters.TryGetProperty( "range", out var r ) ) ((dynamic)light).Range = r.GetSingle();
+			return Task.FromResult<object>( new { success = true, data = new { updated = true } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Add a ParticleSystem component to a GameObject.</summary>
+public class CreateParticleSystemHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var id = parameters.GetProperty( "id" ).GetString();
+		var go = SceneEditorSession.Active?.Scene?.FindSceneObject( new Guid( id ) );
+		if ( go == null ) return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {id}", errorCode = "HANDLER_ERROR" as string } );
+		try {
+			var ps = go.AddComponent<ParticleSystem>();
+			return Task.FromResult<object>( new { success = true, data = new { id = ps.GameObject.Id.ToString(), component = ps.GetType().Name } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Query runtime errors from the NLog memory target (S10 infrastructure).</summary>
+public class GetRuntimeErrorsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var count = parameters.TryGetProperty( "count", out var c ) ? c.GetInt32() : 50;
+		var entries = BridgeLogTarget.GetEntries();
+		var errors = entries.Where( e => e.level == "Error" || e.level == "Fatal" ).Take( count ).ToArray();
+		return Task.FromResult<object>( new { success = true, data = new { count = errors.Length, entries = errors } } );
+	}
+}
+
+/// <summary>Get editor camera position, rotation, and FOV.</summary>
+public class GetEditorCameraHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try {
+			var cam = SceneEditorSession.Active?.Scene?.Camera;
+			if ( cam == null ) return Task.FromResult<object>( new { success = false, error = "No active camera", errorCode = "HANDLER_ERROR" as string } );
+			return Task.FromResult<object>( new { success = true, data = new { position = new { x = cam.Position.x, y = cam.Position.y, z = cam.Position.z }, rotation = new { pitch = cam.Rotation.Pitch(), yaw = cam.Rotation.Yaw(), roll = cam.Rotation.Roll() }, fov = cam.FieldOfView } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = $"Camera not accessible: {ex.Message}", errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Set editor camera position and/or rotation.</summary>
+public class SetEditorCameraHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try {
+			var cam = SceneEditorSession.Active?.Scene?.Camera;
+			if ( cam == null ) return Task.FromResult<object>( new { success = false, error = "No active camera", errorCode = "HANDLER_ERROR" as string } );
+			if ( parameters.TryGetProperty( "position", out var pos ) ) { cam.Position = ClaudeBridge.ParseVector3( pos ); }
+			if ( parameters.TryGetProperty( "rotation", out var rot ) ) { cam.Rotation = Rotation.From( rot.TryGetProperty( "pitch", out var p ) ? p.GetSingle() : 0, rot.TryGetProperty( "yaw", out var y ) ? y.GetSingle() : 0, rot.TryGetProperty( "roll", out var r ) ? r.GetSingle() : 0 ); }
+			return Task.FromResult<object>( new { success = true, data = new { updated = true } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = $"Camera not accessible: {ex.Message}", errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Trigger navmesh generation.</summary>
+public class BuildNavMeshHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try {
+			SceneEditorSession.Active?.Scene?.NavMesh?.Build();
+			return Task.FromResult<object>( new { success = true, data = new { built = true } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = $"NavMesh build failed: {ex.Message}", errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Query nearest navmesh point at a world position.</summary>
+public class QueryNavMeshHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var pos = ClaudeBridge.ParseVector3( parameters.TryGetProperty( "position", out var p ) ? p : default );
+		try {
+			var navMesh = SceneEditorSession.Active?.Scene?.NavMesh;
+			if ( navMesh == null ) return Task.FromResult<object>( new { success = false, error = "No NavMesh available", errorCode = "HANDLER_ERROR" as string } );
+			var closest = navMesh.GetClosestPoint( pos );
+			return Task.FromResult<object>( new { success = true, data = new { position = new { x = closest.x, y = closest.y, z = closest.z }, reachable = true } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = $"NavMesh query failed: {ex.Message}", errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>List animation clips on a SkinnedModelRenderer.</summary>
+public class ListAnimationsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var id = parameters.GetProperty( "id" ).GetString();
+		var go = SceneEditorSession.Active?.Scene?.FindSceneObject( new Guid( id ) );
+		if ( go == null ) return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {id}", errorCode = "HANDLER_ERROR" as string } );
+		var renderer = go.GetComponent<SkinnedModelRenderer>();
+		if ( renderer == null ) return Task.FromResult<object>( new { success = false, error = "No SkinnedModelRenderer on this GameObject", errorCode = "HANDLER_ERROR" as string } );
+		try {
+			var anims = renderer.Animations?.Select( a => new { name = a.Name, duration = a.Duration } ).ToArray() ?? Array.Empty<object>();
+			return Task.FromResult<object>( new { success = true, data = new { count = anims.Length, animations = anims } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Play an animation by name on a SkinnedModelRenderer.</summary>
+public class PlayAnimationHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var id = parameters.GetProperty( "id" ).GetString();
+		var name = parameters.GetProperty( "name" ).GetString();
+		var go = SceneEditorSession.Active?.Scene?.FindSceneObject( new Guid( id ) );
+		if ( go == null ) return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {id}", errorCode = "HANDLER_ERROR" as string } );
+		var renderer = go.GetComponent<SkinnedModelRenderer>();
+		if ( renderer == null ) return Task.FromResult<object>( new { success = false, error = "No SkinnedModelRenderer on this GameObject", errorCode = "HANDLER_ERROR" as string } );
+		try {
+			renderer.SetAnimParameter( name, 1f );
+			return Task.FromResult<object>( new { success = true, data = new { playing = name } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>List input actions from project config files.</summary>
+public class ListInputActionsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try {
+			var projectDir = Project.Current?.Directory;
+			var actions = new List<object>();
+			if ( projectDir != null )
+			{
+				var files = Directory.GetFiles( projectDir, "*.inputactions", SearchOption.AllDirectories );
+				foreach ( var f in files )
+				{
+					try {
+						var content = File.ReadAllText( f );
+						actions.Add( new { file = Path.GetRelativePath( projectDir, f ), content } );
+					} catch {}
+				}
+			}
+			return Task.FromResult<object>( new { success = true, data = new { count = actions.Count, actions } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Snapshot scene: serialize all GameObjects' transforms and named components to JSON.</summary>
+public class SnapshotSceneHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null ) return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+		try {
+			var objects = new List<object>();
+			foreach ( var go in scene.SceneObjects )
+			{
+				objects.Add( new {
+					id = go.Id.ToString(),
+					name = go.Name,
+					position = new { x = go.Position.x, y = go.Position.y, z = go.Position.z },
+					rotation = new { pitch = go.Rotation.Pitch(), yaw = go.Rotation.Yaw(), roll = go.Rotation.Roll() },
+					scale = new { x = go.Scale.x, y = go.Scale.y, z = go.Scale.z }
+				} );
+			}
+			return Task.FromResult<object>( new { success = true, data = new { sceneName = scene.Name, count = objects.Count, objects } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Restore scene: apply saved transforms from a snapshot.</summary>
+public class RestoreSceneHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var scene = SceneEditorSession.Active?.Scene;
+		if ( scene == null ) return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+		var objects = parameters.GetProperty( "objects" );
+		try {
+			int applied = 0;
+			foreach ( var obj in objects.EnumerateArray() )
+			{
+				var idStr = obj.GetProperty( "id" ).GetString();
+				var go = scene.FindSceneObject( new Guid( idStr ) );
+				if ( go == null ) continue;
+				if ( obj.TryGetProperty( "position", out var pos ) ) go.Position = ClaudeBridge.ParseVector3( pos );
+				if ( obj.TryGetProperty( "rotation", out var rot ) ) go.Rotation = Rotation.From( rot.TryGetProperty( "pitch", out var p ) ? p.GetSingle() : 0, rot.TryGetProperty( "yaw", out var y ) ? y.GetSingle() : 0, rot.TryGetProperty( "roll", out var r ) ? r.GetSingle() : 0 );
+				applied++;
+			}
+			return Task.FromResult<object>( new { success = true, data = new { applied } } );
+		} catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
 
 }
