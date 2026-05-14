@@ -279,6 +279,15 @@ public static class ClaudeBridge
 		catch ( Exception ex ) { Log.Warning( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
 
 
+		// Phase 3 v2 — API-probe-verified (2026-05-14) ───────────────────
+		Register( "create_light",            new CreateLightHandler() );
+		Register( "set_light_properties",    new SetLightPropertiesHandler() );
+		Register( "create_particle_effect",  new CreateParticleEffectHandler() );
+		Register( "play_animation",          new PlayAnimationHandler() );
+		Register( "build_navmesh",           new BuildNavMeshHandler() );
+		Register( "query_navmesh",           new QueryNavMeshHandler() );
+		Register( "get_editor_camera",       new GetEditorCameraHandler() );
+		Register( "set_editor_camera",       new SetEditorCameraHandler() );
 		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
 
@@ -5234,5 +5243,281 @@ public class PingHandler : IBridgeHandler
 			success = true,
 			data = new { pong = true, timestamp = DateTime.UtcNow.ToString( "o" ) }
 		} );
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 3 v2 — Tool Surface Expansion (API-probe-verified, 2026-05-14)
+// ═══════════════════════════════════════════════════════════════════
+
+/// <summary>Add a light component (point, spot, or directional) to a GameObject.</summary>
+public class CreateLightHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "id" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var lightType = parameters.TryGetProperty( "lightType", out var lt ) ? (lt.GetString() ?? "point").ToLowerInvariant() : "point";
+			Light light = lightType switch
+			{
+				"spot" => go.AddComponent<SpotLight>(),
+				"directional" => go.AddComponent<DirectionalLight>(),
+				_ => go.AddComponent<PointLight>(),
+			};
+
+			if ( parameters.TryGetProperty( "color", out var c ) )
+			{
+				var s = c.GetString();
+				if ( !string.IsNullOrEmpty( s ) ) light.LightColor = Color.Parse( s ).GetValueOrDefault( Color.White );
+			}
+			if ( parameters.TryGetProperty( "shadows", out var sh ) ) light.Shadows = sh.GetBoolean();
+
+			return Task.FromResult<object>( new { success = true, data = new { type = light.GetType().Name, id = go.Id.ToString() } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Modify properties on an existing Light component.</summary>
+public class SetLightPropertiesHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "id" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var light = go.GetComponent<Light>();
+			if ( light == null )
+				return Task.FromResult<object>( new { success = false, error = "No Light component on this GameObject", errorCode = "HANDLER_ERROR" as string } );
+
+			if ( parameters.TryGetProperty( "color", out var c ) )
+			{
+				var s = c.GetString();
+				if ( !string.IsNullOrEmpty( s ) ) light.LightColor = Color.Parse( s ).GetValueOrDefault( Color.White );
+			}
+			if ( parameters.TryGetProperty( "shadows", out var sh ) ) light.Shadows = sh.GetBoolean();
+			if ( parameters.TryGetProperty( "shadowBias", out var sb ) ) light.ShadowBias = sb.GetSingle();
+
+			return Task.FromResult<object>( new { success = true, data = new { updated = true } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Add a ParticleEffect component to a GameObject.</summary>
+public class CreateParticleEffectHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "id" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var pe = go.AddComponent<ParticleEffect>();
+			return Task.FromResult<object>( new { success = true, data = new { id = go.Id.ToString(), component = pe.GetType().Name } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Set an animation parameter on a SkinnedModelRenderer.</summary>
+public class PlayAnimationHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "id" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var renderer = go.GetComponent<SkinnedModelRenderer>();
+			if ( renderer == null )
+				return Task.FromResult<object>( new { success = false, error = "No SkinnedModelRenderer on this GameObject", errorCode = "HANDLER_ERROR" as string } );
+
+			var name = parameters.GetProperty( "name" ).GetString();
+			if ( string.IsNullOrEmpty( name ) )
+				return Task.FromResult<object>( new { success = false, error = "Parameter 'name' is required", errorCode = "INVALID_PARAMS" as string } );
+
+			if ( parameters.TryGetProperty( "value", out var v ) )
+			{
+				switch ( v.ValueKind )
+				{
+					case JsonValueKind.True: renderer.Set( name, true ); break;
+					case JsonValueKind.False: renderer.Set( name, false ); break;
+					case JsonValueKind.Number:
+						if ( v.TryGetInt32( out var iv ) ) renderer.Set( name, iv );
+						else renderer.Set( name, v.GetSingle() );
+						break;
+					default: renderer.Set( name, v.GetSingle() ); break;
+				}
+			}
+			return Task.FromResult<object>( new { success = true, data = new { parameter = name, set = true } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Trigger NavMesh generation for the active scene.</summary>
+public class BuildNavMeshHandler : IBridgeHandler
+{
+	public async Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string };
+			var nav = scene.NavMesh;
+			if ( nav == null )
+				return new { success = false, error = "Scene has no NavMesh", errorCode = "HANDLER_ERROR" as string };
+			await nav.Generate( scene.PhysicsWorld );
+			return new { success = true, data = new { generated = true } };
+		}
+		catch ( Exception ex ) { return new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string }; }
+	}
+}
+
+/// <summary>Find the closest NavMesh point to a world position.</summary>
+public class QueryNavMeshHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+			var nav = scene.NavMesh;
+			if ( nav == null )
+				return Task.FromResult<object>( new { success = false, error = "Scene has no NavMesh", errorCode = "HANDLER_ERROR" as string } );
+
+			var pos = parameters.TryGetProperty( "position", out var pp ) ? ClaudeBridge.ParseVector3( pp ) : Vector3.Zero;
+			float radius = parameters.TryGetProperty( "radius", out var r ) ? r.GetSingle() : 1000f;
+
+			var closest = nav.GetClosestPoint( pos, radius );
+			if ( !closest.HasValue )
+				return Task.FromResult<object>( new { success = true, data = new { reachable = false } } );
+			var p = closest.Value;
+			return Task.FromResult<object>( new { success = true, data = new { reachable = true, position = new { x = p.x, y = p.y, z = p.z } } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Get the main scene camera position, rotation, and FOV.</summary>
+public class GetEditorCameraHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+			var cam = scene.Camera;
+			if ( cam == null )
+			{
+				cam = scene.GetAllComponents<CameraComponent>().FirstOrDefault( c => c.IsMainCamera )
+					?? scene.GetAllComponents<CameraComponent>().FirstOrDefault();
+			}
+			if ( cam == null )
+				return Task.FromResult<object>( new { success = false, error = "No CameraComponent found in scene", errorCode = "HANDLER_ERROR" as string } );
+			var go = cam.GameObject;
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					id = go.Id.ToString(),
+					name = go.Name,
+					position = new { x = go.WorldPosition.x, y = go.WorldPosition.y, z = go.WorldPosition.z },
+					rotation = new { pitch = go.WorldRotation.Pitch(), yaw = go.WorldRotation.Yaw(), roll = go.WorldRotation.Roll() },
+					fieldOfView = cam.FieldOfView,
+					zNear = cam.ZNear,
+					zFar = cam.ZFar
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+/// <summary>Set the main scene camera position and/or rotation.</summary>
+public class SetEditorCameraHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+			var cam = scene.Camera;
+			if ( cam == null )
+			{
+				cam = scene.GetAllComponents<CameraComponent>().FirstOrDefault( c => c.IsMainCamera )
+					?? scene.GetAllComponents<CameraComponent>().FirstOrDefault();
+			}
+			if ( cam == null )
+				return Task.FromResult<object>( new { success = false, error = "No CameraComponent found in scene", errorCode = "HANDLER_ERROR" as string } );
+			var go = cam.GameObject;
+
+			bool changed = false;
+			if ( parameters.TryGetProperty( "position", out var posEl ) )
+			{
+				go.WorldPosition = ClaudeBridge.ParseVector3( posEl );
+				changed = true;
+			}
+			if ( parameters.TryGetProperty( "rotation", out var rotEl ) )
+			{
+				go.WorldRotation = ClaudeBridge.ParseRotation( rotEl );
+				changed = true;
+			}
+			if ( parameters.TryGetProperty( "fieldOfView", out var fov ) ) { cam.FieldOfView = fov.GetSingle(); changed = true; }
+			return Task.FromResult<object>( new { success = true, data = new { updated = changed } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
 	}
 }
