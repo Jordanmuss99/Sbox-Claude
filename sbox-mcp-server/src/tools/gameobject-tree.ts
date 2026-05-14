@@ -20,7 +20,7 @@ export function registerGameObjectTreeTools(
 ): void {
   server.tool(
     "snapshot_gameobject_tree",
-    "Serialize a GameObject subtree to a JSON file at a project-relative path. Captures structure, transforms, tags, and primitive component properties.",
+    "Serialize a GameObject subtree to a JSON file at a project-relative path. Captures structure, transforms, tags, and primitive component properties. NOTE: resource references (Model, Material, Sound, prefab GameObjects) are NOT round-tripped — they appear in each component's `_skippedProperties` array. An instantiated cube will have its ModelRenderer reattached but with no Model assigned, so it will be visually invisible. For full clones, use prefabs + set_prefab_ref, not this tool.",
     {
       rootId: z.string().describe("GUID of the subtree root GameObject"),
       outputPath: z.string().describe("Project-relative file path to write (e.g. 'snapshots/player.json')"),

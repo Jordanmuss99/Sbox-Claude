@@ -384,10 +384,18 @@ public static class ClaudeBridge
 		try
 		{
 			var files = Directory.GetFiles( _ipcDir, "req_*.json" );
+			var nowUtc = DateTime.UtcNow;
 			foreach ( var reqFile in files )
 			{
 				try
 				{
+					// Phase A.C.3.12 follow-up (v1.4.0 smoke fix) — skip orphan files older
+					// than 60s. They are leftovers from crashed MCP clients and are often
+					// locked by zombie processes; retrying every 20ms just spams the log.
+					// The TS-side startup orphan sweep deletes them when it reconnects.
+					var ageSec = (nowUtc - File.GetLastWriteTimeUtc( reqFile )).TotalSeconds;
+					if ( ageSec > 60 ) continue;
+
 					var json = File.ReadAllText( reqFile, Encoding.UTF8 );
 					File.Delete( reqFile );
 
@@ -400,6 +408,7 @@ public static class ClaudeBridge
 					}
 				}
 				catch ( IOException ) { }
+				catch ( UnauthorizedAccessException ) { }
 				catch ( Exception ex )
 				{
 					QueueDeferredLog( $"[SboxBridge] Read error: {ex.Message}" );
@@ -6024,13 +6033,21 @@ public class CameraFocusObjectHandler : IBridgeHandler
 
 	internal static bool TryFrameTo( SceneEditorSession session, BBox bounds )
 	{
-		// FrameTo is a method on SceneEditorSession in newer s&box builds. We invoke
-		// via reflection so the bridge compiles even on builds where it's missing.
+		// FrameTo signature in current s&box is `Void FrameTo(BBox& box)` — a by-ref
+		// parameter (`ref BBox` or `in BBox` from C#'s side). The reflection lookup
+		// MUST use `typeof(BBox).MakeByRefType()` or GetMethod returns null. We try
+		// the by-ref signature first (current builds), then fall back to by-value
+		// in case a future build flips it back.
 		try
 		{
-			var m = session.GetType().GetMethod( "FrameTo", new[] { typeof( BBox ) } );
+			var t = session.GetType();
+			var m = t.GetMethod( "FrameTo", new[] { typeof( BBox ).MakeByRefType() } )
+				?? t.GetMethod( "FrameTo", new[] { typeof( BBox ) } );
 			if ( m == null ) return false;
-			m.Invoke( session, new object[] { bounds } );
+			// For by-ref params, Invoke still takes the value in args[0]; the runtime
+			// handles the marshalling and writes back to the slot (we don't read it).
+			var args = new object[] { bounds };
+			m.Invoke( session, args );
 			return true;
 		}
 		catch { return false; }
