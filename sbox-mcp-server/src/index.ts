@@ -47,6 +47,7 @@ import { registerVfxTools } from "./tools/vfx.js";
 import { registerAnimationTools } from "./tools/animation.js";
 import { registerNavMeshTools } from "./tools/navmesh.js";
 import { registerCameraTools } from "./tools/camera.js";
+import { registerGameObjectTreeTools } from "./tools/gameobject-tree.js";
 import { EventWatcher } from "./transport/event-watcher.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
@@ -166,6 +167,7 @@ registerVfxTools(server, bridge);
 registerAnimationTools(server, bridge);
 registerNavMeshTools(server, bridge);
 registerCameraTools(server, bridge);
+registerGameObjectTreeTools(server, bridge);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {
@@ -191,6 +193,27 @@ async function main(): Promise<void> {
       "[sbox-mcp] Warning: Could not connect to s&box Bridge. Will retry on first tool call."
     );
   }
+
+  // Phase A.C.3.10 — start the heartbeat loop. Pings every 5s, transitions to
+  // disconnected after 3 consecutive misses, and reconnects when the bridge
+  // comes back. Logs disconnect/reconnect to stderr for operator visibility.
+  bridge.startHeartbeat();
+  bridge.on("disconnect", (info: { missCount: number }) => {
+    console.error(`[sbox-mcp] Bridge disconnected after ${info.missCount} missed pings. Reconnect loop active.`);
+  });
+  bridge.on("reconnect", (info: { latencyMs: number }) => {
+    console.error(`[sbox-mcp] Bridge reconnected (latency ${info.latencyMs} ms).`);
+  });
+
+  // Graceful shutdown — stop timers and watcher so the process exits cleanly.
+  const shutdown = (signal: string): void => {
+    console.error(`[sbox-mcp] Received ${signal} — shutting down.`);
+    bridge.disconnect();
+    eventWatcher.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

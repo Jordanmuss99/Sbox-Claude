@@ -2,13 +2,26 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: 136 canonical TS tools / 121 C# handlers / 15 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 171 runtime-registered total)
+## Status: 140 canonical TS tools / 125 C# handlers / 15 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 175 runtime-registered total)
 
-**Last updated:** 2026-05-14
+**Last updated:** 2026-05-14 (v1.4.0)
 **Bridge:** File-based IPC ✅ working on main thread
-**Handlers:** 121 compiled and registered (TS canonicals minus 15 TS-only = 121 paired with C#)
+**Wire protocol:** v1 (asserted on connect via status.json `protocol_version`)
+**Handlers:** 125 compiled and registered (TS canonicals minus 15 TS-only = 125 paired with C#)
 **JTC parity:** **48 / 48 (100%)** 🎉 — full parity 2026-05-13 (S8 + S9). **S10 bonus**: real `get_console_output` (NLog capture beyond JTC's manual-buffer approach).
 **Not implementable:** 8 tools (no s&box API exists — see "Known Issues"). These overlap with the TS-only allowlist. S10 (2026-05-13) moved `get_console_output` out of this list — it now works via NLog `MemoryTarget` attached by reflection.
+
+### What's new in v1.4.0 (2026-05-14)
+
+**Transport hardening + 4 Phase 3 v3 tools + addon-sync infrastructure + sbox-game-dev skill.** See `CHANGELOG.md` for the full per-phase rundown.
+
+- **Phase 0 (cross-cutting)**: wire-protocol versioning (`PROTOCOL_VERSION = 1`), canonical addon-sync scripts + drift detection, mock-ipc-dir test fixtures, docs:sync templating (`scripts/gen-status.mjs` + `scripts/inject-status.mjs`).
+- **Phase A (transport)**: 3-strike heartbeat with `disconnect`/`reconnect` events, shared `fs.watch` demux (replaces per-call setInterval thrash; Promise.all pipelines naturally), scoped startup orphan sweep, new diagnostics fields on `get_bridge_status`, dropped dead `sendBatch()` method.
+- **Phase B (tools, +4)**: `snapshot_gameobject_tree` / `instantiate_gameobject_tree` (subtree round-trip with primitive property values; atomic-or-nothing instantiate); `camera_focus_object` / `camera_frame_bounds` (reflection-invoked `SceneEditorSession.FrameTo`).
+- **Phase D (skill)**: `~/.claude/skills/sbox-game-dev/SKILL.md` auto-loads on s&box prompts with decision tree + pitfalls + addon-sync workflow.
+- **Deferred**: `list_animations` (Phase B.1) — see `.omc/research/phase3v3-list-animations.md` for reopen criteria.
+
+Counts: 136 → 140 canonical TS tools, 121 → 125 C# handlers, total 171 → 175 runtime-registered.
 
 ### What's new in v1.3.0 (2026-05-14)
 

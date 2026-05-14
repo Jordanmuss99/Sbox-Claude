@@ -1,3 +1,22 @@
+// =================================================================
+// MyEditorMenu.cs — s&box Claude Bridge addon (CANONICAL SOURCE)
+// =================================================================
+//
+// This file is the CANONICAL source for the bridge addon. The live copy that
+// actually runs inside s&box lives at:
+//   <sbox-project>/Libraries/claudebridge/Editor/MyEditorMenu.cs
+//
+// Edit this file, then sync it into the live copy with one of:
+//   pwsh sbox-mcp-server/scripts/sync-addon.ps1 -Target <path>
+//   sbox-mcp-server/scripts/sync-addon.sh <path>
+//
+// SHA256 drift between canonical and live is checked by
+//   node sbox-mcp-server/scripts/verify-addon-sync.mjs
+// and by the vitest contract test/addon-sync.test.ts.
+//
+// Wire-protocol version: see ClaudeBridge.PROTOCOL_VERSION below.
+// =================================================================
+
 using Editor;
 using Sandbox;
 using System;
@@ -25,18 +44,61 @@ public interface IBridgeHandler
 /// </summary>
 public static class ClaudeBridge
 {
+	// Phase 0.1 — wire-protocol version. Bumped only on breaking IPC changes (envelope shape,
+	// status.json key renames, etc). TS BridgeClient asserts this on connect and refuses
+	// to talk to an incompatible bridge. v1 = post-Phase-0 envelope (success/errorCode at top level).
+	public const int PROTOCOL_VERSION = 1;
+
 	private static readonly Dictionary<string, IBridgeHandler> _handlers = new();
 	private static bool _running;
 	private static string _ipcDir;
 	private static Timer _pollTimer;
+	private static int _editorPid = -1;
+	private static string _addonVersion = "1.4.0";
 	// UTF-8 without BOM — Node.js JSON.parse rejects the BOM prefix
 	private static readonly Encoding _utf8NoBom = new UTF8Encoding( false );
 
 	static ClaudeBridge()
 	{
-		Log.Info( "[SboxBridge] Initializing..." );
+		// CRITICAL: do not call Log.* here, nor anywhere reachable from this ctor.
+		// s&box guards TypeLibrary access during static-constructor phase. Any log
+		// dispatch routes through the dev-console overlay which creates a Panel UI
+		// that touches Game.TypeLibrary, which throws "Disabled during static
+		// constructors" and crashes Bootstrap::Init. Defer all diagnostics to the
+		// first frame tick via QueueDeferredLog() / DrainDeferredLogs().
+		QueueDeferredLog( "[SboxBridge] Initializing..." );
 		RegisterHandlers();
 		StartBridge();
+	}
+
+	// Deferred-logging buffer — anything queued during static-ctor phase is
+	// drained on the first [EditorEvent.Frame] tick when TypeLibrary is safe.
+	static readonly List<string> _deferredLogs = new();
+	static bool _deferredLogsDrained;
+
+	// internal so BridgeLogTarget and other in-assembly classes can defer their
+	// log calls when they're invoked from the static-ctor path.
+	internal static void QueueDeferredLog( string message )
+	{
+		lock ( _deferredLogs ) _deferredLogs.Add( message );
+	}
+
+	[EditorEvent.Frame]
+	public static void DrainDeferredLogs()
+	{
+		if ( _deferredLogsDrained ) return;
+		List<string> snapshot;
+		lock ( _deferredLogs )
+		{
+			if ( _deferredLogs.Count == 0 ) { _deferredLogsDrained = true; return; }
+			snapshot = new List<string>( _deferredLogs );
+			_deferredLogs.Clear();
+		}
+		_deferredLogsDrained = true;
+		foreach ( var m in snapshot )
+		{
+			try { Log.Info( m ); } catch { /* console overlay may still be unhappy — swallow */ }
+		}
 	}
 
 	[Menu( "Editor", "Claude Bridge/Status", "smart_toy" )]
@@ -59,10 +121,14 @@ public static class ClaudeBridge
 	[EditorEvent.Hotload]
 	public static void OnHotload()
 	{
-		Log.Info( "[SboxBridge] Hotload detected — restarting bridge..." );
+		// Hotload fires AFTER type init, so direct Log.Info here is safe — but we
+		// still tolerate the dev-console overlay throwing during early scene-load
+		// edge cases by wrapping in try/catch.
+		try { Log.Info( "[SboxBridge] Hotload detected — restarting bridge..." ); } catch { }
 		// Repopulate handlers in case the static `_handlers` dict got reset by a
 		// reload of THIS class but RegisterHandlers() didn't fire (the static
 		// cctor only runs on fresh type init, not on hotload re-entry).
+		_deferredLogsDrained = false; // re-enable deferred drain after hotload
 		RegisterHandlers();
 		StartBridge();
 	}
@@ -83,9 +149,13 @@ public static class ClaudeBridge
 			Directory.CreateDirectory( _ipcDir );
 
 			var statusPath = Path.Combine( _ipcDir, "status.json" );
+			try { _editorPid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { _editorPid = -1; }
 			File.WriteAllText( statusPath, JsonSerializer.Serialize( new
 			{
 				running = true,
+				protocol_version = PROTOCOL_VERSION,
+				addonVersion = _addonVersion,
+				editorPid = _editorPid,
 				startedAt = DateTime.UtcNow.ToString( "o" ),
 				handlerCount = _handlers.Count
 			} ), _utf8NoBom );
@@ -99,12 +169,12 @@ public static class ClaudeBridge
 			// But queue the actual processing for the main thread
 			_pollTimer = new Timer( ReadRequestFiles, null, 500, 20 );
 
-			Log.Info( $"[SboxBridge] Bridge started — {_handlers.Count} handlers, IPC at {_ipcDir}" );
-			Log.Info( "[SboxBridge] s&box Claude Bridge by sboxskins.gg — https://sboxskins.gg" );
+			QueueDeferredLog( $"[SboxBridge] Bridge started — {_handlers.Count} handlers, IPC at {_ipcDir}" );
+			QueueDeferredLog( "[SboxBridge] s&box Claude Bridge by sboxskins.gg — https://sboxskins.gg" );
 		}
 		catch ( Exception ex )
 		{
-			Log.Warning( $"[SboxBridge] Failed to start: {ex.Message}" );
+			QueueDeferredLog( $"[SboxBridge] Failed to start: {ex.Message}" );
 		}
 	}
 
@@ -276,7 +346,7 @@ public static class ClaudeBridge
 		Register( "get_console_output",       new GetConsoleOutputHandler() );
 		Register( "ping",                   new PingHandler() );
 		try { BridgeLogTarget.EnsureAttached(); }
-		catch ( Exception ex ) { Log.Warning( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
+		catch ( Exception ex ) { QueueDeferredLog( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
 
 
 		// Phase 3 v2 — API-probe-verified (2026-05-14) ───────────────────
@@ -288,7 +358,13 @@ public static class ClaudeBridge
 		Register( "query_navmesh",           new QueryNavMeshHandler() );
 		Register( "get_editor_camera",       new GetEditorCameraHandler() );
 		Register( "set_editor_camera",       new SetEditorCameraHandler() );
-		Log.Info( $"[SboxBridge] Registered {_handlers.Count} handlers" );
+
+		// Phase 3 v3 — v1.4.0 (2026-05-14)
+		Register( "snapshot_gameobject_tree",     new SnapshotGameObjectTreeHandler() );
+		Register( "instantiate_gameobject_tree",  new InstantiateGameObjectTreeHandler() );
+		Register( "camera_focus_object",          new CameraFocusObjectHandler() );
+		Register( "camera_frame_bounds",          new CameraFrameBoundsHandler() );
+		QueueDeferredLog( $"[SboxBridge] Registered {_handlers.Count} handlers" );
 	}
 
 	public static int HandlerCount => _handlers.Count;
@@ -326,7 +402,7 @@ public static class ClaudeBridge
 				catch ( IOException ) { }
 				catch ( Exception ex )
 				{
-					Log.Warning( $"[SboxBridge] Read error: {ex.Message}" );
+					QueueDeferredLog( $"[SboxBridge] Read error: {ex.Message}" );
 				}
 			}
 		}
@@ -359,7 +435,7 @@ public static class ClaudeBridge
 			}
 			catch ( Exception ex )
 			{
-				Log.Warning( $"[SboxBridge] Write error: {ex.Message}" );
+				QueueDeferredLog( $"[SboxBridge] Write error: {ex.Message}" );
 			}
 		}
 	}
@@ -478,8 +554,11 @@ public static class ClaudeBridge
 	}
 
 	/// <summary>
-	/// Shared error detection — used by ProcessRequest AND BatchHandler.
-	/// Handles null results, bare {error} without success, and both JsonElement/reflection paths.
+	/// Shared error detection. Handles null results, bare {error} without success,
+	/// and both JsonElement/reflection paths. Used to be shared with a BatchHandler
+	/// that was dropped in v1.4.0 (Phase A.C.3.14) — callers use Promise.all() on the
+	/// TS side instead, which naturally pipelines through the one-frame-per-request
+	/// queue without needing a special batch envelope.
 	/// </summary>
 	public static (bool isFailure, string error, string errorCode) IsHandlerFailure( object result )
 	{
@@ -5054,7 +5133,7 @@ public static class BridgeLogTarget
 			if ( nlogAsm == null )
 			{
 				_attachError = "NLog assembly not loaded in AppDomain";
-				Log.Warning( $"[SboxBridge] {_attachError}" );
+				ClaudeBridge.QueueDeferredLog( $"[SboxBridge] {_attachError}" );
 				return;
 			}
 
@@ -5069,7 +5148,7 @@ public static class BridgeLogTarget
 				|| logFactoryType == null || loggingConfigType == null || targetBaseType == null )
 			{
 				_attachError = "required NLog types not found in assembly";
-				Log.Warning( $"[SboxBridge] {_attachError}" );
+				ClaudeBridge.QueueDeferredLog( $"[SboxBridge] {_attachError}" );
 				return;
 			}
 
@@ -5085,7 +5164,7 @@ public static class BridgeLogTarget
 			if ( factory == null )
 			{
 				_attachError = "could not reach LogFactory via reflection";
-				Log.Warning( $"[SboxBridge] {_attachError}" );
+				ClaudeBridge.QueueDeferredLog( $"[SboxBridge] {_attachError}" );
 				return;
 			}
 
@@ -5094,7 +5173,7 @@ public static class BridgeLogTarget
 			if ( config == null )
 			{
 				_attachError = "LogFactory.Configuration is null";
-				Log.Warning( $"[SboxBridge] {_attachError}" );
+				ClaudeBridge.QueueDeferredLog( $"[SboxBridge] {_attachError}" );
 				return;
 			}
 
@@ -5117,17 +5196,17 @@ public static class BridgeLogTarget
 			_attached = _logsList != null;
 
 			if ( _attached )
-				Log.Info( "[SboxBridge] BridgeLogTarget attached via reflection — NLog log capture is live" );
+				ClaudeBridge.QueueDeferredLog( "[SboxBridge] BridgeLogTarget attached via reflection — NLog log capture is live" );
 			else
 			{
 				_attachError = "MemoryTarget.Logs property missing";
-				Log.Warning( $"[SboxBridge] {_attachError}" );
+				ClaudeBridge.QueueDeferredLog( $"[SboxBridge] {_attachError}" );
 			}
 		}
 		catch ( Exception ex )
 		{
 			_attachError = ex.Message;
-			Log.Warning( $"[SboxBridge] Reflection-attach failed: {ex.Message}" );
+			ClaudeBridge.QueueDeferredLog( $"[SboxBridge] Reflection-attach failed: {ex.Message}" );
 		}
 	}
 
@@ -5241,7 +5320,11 @@ public class PingHandler : IBridgeHandler
 	{
 		return Task.FromResult<object>( new {
 			success = true,
-			data = new { pong = true, timestamp = DateTime.UtcNow.ToString( "o" ) }
+			data = new {
+				pong = true,
+				timestamp = DateTime.UtcNow.ToString( "o" ),
+				protocol_version = ClaudeBridge.PROTOCOL_VERSION
+			}
 		} );
 	}
 }
@@ -5517,6 +5600,471 @@ public class SetEditorCameraHandler : IBridgeHandler
 			}
 			if ( parameters.TryGetProperty( "fieldOfView", out var fov ) ) { cam.FieldOfView = fov.GetSingle(); changed = true; }
 			return Task.FromResult<object>( new { success = true, data = new { updated = changed } } );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Phase 3 v3 — v1.4.0 (2026-05-14)
+// Subtree snapshot/instantiate + camera framing
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Shared GameObject-tree (de)serialization helpers used by
+/// SnapshotGameObjectTreeHandler and InstantiateGameObjectTreeHandler.
+///
+/// Contract: round-trips name, enabled, tags, transform, and component
+/// PROPERTY VALUES that are primitives / Vector3 / Rotation / Color / strings.
+/// Reference-typed properties (GameObject, Component, Resource handles) are
+/// captured as `null` and the property name is added to `_skippedProperties`
+/// on the per-component record so callers can see what didn't round-trip.
+///
+/// Note: this is intentionally narrower than `Component.Serialize()` per the
+/// v1.4.0 plan (B.2 descope). Resource refs and GameObject refs need separate
+/// wiring tools (`set_prefab_ref` etc).
+/// </summary>
+public static class GoTreeSerialization
+{
+	public const int SNAPSHOT_VERSION = 1;
+
+	public static JsonObject SerializeGo( GameObject go )
+	{
+		var obj = new JsonObject
+		{
+			["name"] = go.Name,
+			["enabled"] = go.Enabled,
+			["position"] = SerializeVector3( go.LocalPosition ),
+			["rotation"] = SerializeRotation( go.LocalRotation ),
+			["scale"] = SerializeVector3( go.LocalScale ),
+		};
+
+		var tagsArr = new JsonArray();
+		foreach ( var t in go.Tags ) tagsArr.Add( t );
+		obj["tags"] = tagsArr;
+
+		var compsArr = new JsonArray();
+		foreach ( var comp in go.Components.GetAll() )
+			compsArr.Add( SerializeComponent( comp ) );
+		obj["components"] = compsArr;
+
+		var kidsArr = new JsonArray();
+		foreach ( var child in go.Children )
+			kidsArr.Add( SerializeGo( child ) );
+		obj["children"] = kidsArr;
+
+		return obj;
+	}
+
+	public static JsonObject SerializeComponent( Component comp )
+	{
+		var typeName = comp.GetType().Name;
+		var record = new JsonObject
+		{
+			["type"] = typeName,
+			["enabled"] = comp.Enabled,
+		};
+		var props = new JsonObject();
+		var skipped = new JsonArray();
+
+		var td = Game.TypeLibrary.GetType( typeName );
+		if ( td != null )
+		{
+			foreach ( var pd in td.Properties )
+			{
+				if ( pd == null || !pd.IsPublic ) continue;
+				if ( pd.HasAttribute<System.ObsoleteAttribute>() ) continue;
+				try
+				{
+					var value = pd.GetValue( comp );
+					var serialized = SerializeValue( value );
+					if ( serialized == null && value != null )
+					{
+						skipped.Add( pd.Name );
+						continue;
+					}
+					props[pd.Name] = serialized;
+				}
+				catch { skipped.Add( pd.Name ); }
+			}
+		}
+		record["properties"] = props;
+		if ( skipped.Count > 0 ) record["_skippedProperties"] = skipped;
+		return record;
+	}
+
+	static JsonNode SerializeValue( object value )
+	{
+		if ( value == null ) return null;
+		switch ( value )
+		{
+			case bool b: return b;
+			case string s: return s;
+			case float f: return f;
+			case double d: return d;
+			case int i: return i;
+			case long l: return l;
+			case Vector3 v: return SerializeVector3( v );
+			case Rotation r: return SerializeRotation( r );
+			case Color c: return new JsonObject { ["r"] = c.r, ["g"] = c.g, ["b"] = c.b, ["a"] = c.a };
+			case Enum e: return e.ToString();
+		}
+		return null; // unsupported (reference type / resource handle / etc)
+	}
+
+	static JsonObject SerializeVector3( Vector3 v ) => new JsonObject { ["x"] = v.x, ["y"] = v.y, ["z"] = v.z };
+	static JsonObject SerializeRotation( Rotation r ) => new JsonObject { ["pitch"] = r.Pitch(), ["yaw"] = r.Yaw(), ["roll"] = r.Roll() };
+
+	/// <summary>
+	/// Build a subtree from a JSON record under `parent` (or scene root if null).
+	/// Appends every newly-created GameObject to `created` so the caller can
+	/// Destroy() them all on partial failure (Phase B.2 atomicity).
+	/// Returns the root of the newly-created subtree.
+	/// </summary>
+	public static GameObject InstantiateGo( Scene scene, JsonObject node, GameObject parent, List<GameObject> created )
+	{
+		var go = scene.CreateObject( true );
+		created.Add( go );
+		if ( parent != null ) go.SetParent( parent, keepWorldPosition: false );
+
+		if ( node.TryGetPropertyValue( "name", out var nameNode ) ) go.Name = nameNode?.GetValue<string>() ?? "GameObject";
+		if ( node.TryGetPropertyValue( "enabled", out var enNode ) && enNode != null ) go.Enabled = enNode.GetValue<bool>();
+		if ( node.TryGetPropertyValue( "position", out var posNode ) && posNode is JsonObject posObj ) go.LocalPosition = ParseVector3( posObj );
+		if ( node.TryGetPropertyValue( "rotation", out var rotNode ) && rotNode is JsonObject rotObj ) go.LocalRotation = ParseRotation( rotObj );
+		if ( node.TryGetPropertyValue( "scale",    out var sclNode ) && sclNode is JsonObject sclObj ) go.LocalScale    = ParseVector3( sclObj );
+
+		if ( node.TryGetPropertyValue( "tags", out var tagsNode ) && tagsNode is JsonArray tagsArr )
+		{
+			foreach ( var t in tagsArr )
+			{
+				var s = t?.GetValue<string>();
+				if ( !string.IsNullOrEmpty( s ) ) go.Tags.Add( s );
+			}
+		}
+
+		if ( node.TryGetPropertyValue( "components", out var compsNode ) && compsNode is JsonArray compsArr )
+		{
+			foreach ( var c in compsArr )
+			{
+				if ( c is not JsonObject compRec ) continue;
+				InstantiateComponent( go, compRec );
+			}
+		}
+
+		if ( node.TryGetPropertyValue( "children", out var kidsNode ) && kidsNode is JsonArray kidsArr )
+		{
+			foreach ( var k in kidsArr )
+			{
+				if ( k is not JsonObject kidRec ) continue;
+				InstantiateGo( scene, kidRec, go, created );
+			}
+		}
+
+		return go;
+	}
+
+	static void InstantiateComponent( GameObject go, JsonObject rec )
+	{
+		var typeName = rec["type"]?.GetValue<string>();
+		if ( string.IsNullOrEmpty( typeName ) ) return;
+		var td = Game.TypeLibrary.GetType( typeName );
+		if ( td == null ) return;
+		var comp = go.Components.Create( td );
+		if ( comp == null ) return;
+		if ( rec.TryGetPropertyValue( "enabled", out var en ) && en != null ) comp.Enabled = en.GetValue<bool>();
+		if ( !rec.TryGetPropertyValue( "properties", out var propsNode ) || propsNode is not JsonObject propsObj ) return;
+		foreach ( var (key, val) in propsObj )
+		{
+			var pd = td.Properties.FirstOrDefault( p => p.Name == key );
+			if ( pd == null || val == null ) continue;
+			try { pd.SetValue( comp, DeserializeValue( val, pd.PropertyType ) ); }
+			catch { /* best-effort — per-property failures don't abort the snapshot */ }
+		}
+	}
+
+	static object DeserializeValue( JsonNode node, Type targetType )
+	{
+		if ( targetType == typeof( Vector3 ) && node is JsonObject v3 ) return ParseVector3( v3 );
+		if ( targetType == typeof( Rotation ) && node is JsonObject ro ) return ParseRotation( ro );
+		if ( targetType == typeof( Color ) && node is JsonObject co )
+			return new Color( co["r"]?.GetValue<float>() ?? 0, co["g"]?.GetValue<float>() ?? 0, co["b"]?.GetValue<float>() ?? 0, co["a"]?.GetValue<float>() ?? 1 );
+		if ( targetType == typeof( bool ) ) return node.GetValue<bool>();
+		if ( targetType == typeof( string ) ) return node.GetValue<string>();
+		if ( targetType == typeof( float ) ) return node.GetValue<float>();
+		if ( targetType == typeof( double ) ) return node.GetValue<double>();
+		if ( targetType == typeof( int ) ) return node.GetValue<int>();
+		if ( targetType == typeof( long ) ) return node.GetValue<long>();
+		if ( targetType != null && targetType.IsEnum )
+		{
+			var str = node.GetValue<string>();
+			return Enum.Parse( targetType, str, ignoreCase: true );
+		}
+		// Fallback: hand the node value back as a string and hope the target type can coerce.
+		return node.ToString();
+	}
+
+	static Vector3 ParseVector3( JsonObject o ) => new Vector3(
+		o["x"]?.GetValue<float>() ?? 0,
+		o["y"]?.GetValue<float>() ?? 0,
+		o["z"]?.GetValue<float>() ?? 0 );
+
+	static Rotation ParseRotation( JsonObject o ) => Rotation.From(
+		o["pitch"]?.GetValue<float>() ?? 0,
+		o["yaw"]?.GetValue<float>() ?? 0,
+		o["roll"]?.GetValue<float>() ?? 0 );
+}
+
+/// <summary>
+/// Serialize a GameObject subtree to a JSON file at a project-relative path.
+/// </summary>
+public class SnapshotGameObjectTreeHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "rootId" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid rootId GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var root = scene.Directory.FindByGuid( guid );
+			if ( root == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var outRel = parameters.GetProperty( "outputPath" ).GetString();
+			if ( string.IsNullOrWhiteSpace( outRel ) )
+				return Task.FromResult<object>( new { success = false, error = "outputPath is required", errorCode = "INVALID_PARAMS" as string } );
+
+			var rootPath = Project.Current.GetRootPath();
+			var fullPath = Path.GetFullPath( Path.Combine( rootPath, outRel ) );
+			if ( !fullPath.StartsWith( rootPath, StringComparison.OrdinalIgnoreCase ) )
+				return Task.FromResult<object>( new { success = false, error = "outputPath traversal denied", errorCode = "INVALID_PARAMS" as string } );
+
+			var tree = GoTreeSerialization.SerializeGo( root );
+			var envelope = new JsonObject
+			{
+				["__version"] = GoTreeSerialization.SNAPSHOT_VERSION,
+				["snapshotAt"] = DateTime.UtcNow.ToString( "o" ),
+				["rootId"] = root.Id.ToString(),
+				["root"] = tree,
+			};
+
+			var (goCount, compCount) = CountTree( tree );
+
+			Directory.CreateDirectory( Path.GetDirectoryName( fullPath ) );
+			var json = envelope.ToJsonString( new JsonSerializerOptions { WriteIndented = true } );
+			File.WriteAllText( fullPath, json );
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					snapshotted = true,
+					path = outRel,
+					gameObjectCount = goCount,
+					componentCount = compCount,
+					sizeBytes = new FileInfo( fullPath ).Length,
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+
+	static (int goCount, int compCount) CountTree( JsonNode node )
+	{
+		if ( node is not JsonObject o ) return (0, 0);
+		int goCount = 1;
+		int compCount = (o["components"] as JsonArray)?.Count ?? 0;
+		if ( o["children"] is JsonArray kids )
+		{
+			foreach ( var k in kids )
+			{
+				var (g, c) = CountTree( k );
+				goCount += g;
+				compCount += c;
+			}
+		}
+		return (goCount, compCount);
+	}
+}
+
+/// <summary>
+/// Read a snapshot JSON and recreate the subtree as NEW GameObjects with fresh
+/// GUIDs under `parentId` (or scene root). On partial failure all newly-created
+/// GameObjects are destroyed before returning the error — atomic-or-nothing.
+/// </summary>
+public class InstantiateGameObjectTreeHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		var created = new List<GameObject>();
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var jsonRel = parameters.GetProperty( "jsonPath" ).GetString();
+			if ( string.IsNullOrWhiteSpace( jsonRel ) )
+				return Task.FromResult<object>( new { success = false, error = "jsonPath is required", errorCode = "INVALID_PARAMS" as string } );
+
+			var rootPath = Project.Current.GetRootPath();
+			var fullPath = Path.GetFullPath( Path.Combine( rootPath, jsonRel ) );
+			if ( !fullPath.StartsWith( rootPath, StringComparison.OrdinalIgnoreCase ) )
+				return Task.FromResult<object>( new { success = false, error = "jsonPath traversal denied", errorCode = "INVALID_PARAMS" as string } );
+			if ( !File.Exists( fullPath ) )
+				return Task.FromResult<object>( new { success = false, error = $"Snapshot file not found: {jsonRel}", errorCode = "HANDLER_ERROR" as string } );
+
+			var raw = File.ReadAllText( fullPath );
+			var envelope = JsonNode.Parse( raw ) as JsonObject;
+			if ( envelope == null )
+				return Task.FromResult<object>( new { success = false, error = "Snapshot file is not a JSON object", errorCode = "HANDLER_ERROR" as string } );
+
+			var version = envelope["__version"]?.GetValue<int>() ?? 0;
+			if ( version != GoTreeSerialization.SNAPSHOT_VERSION )
+				return Task.FromResult<object>( new { success = false, error = $"Snapshot version mismatch: got {version}, expected {GoTreeSerialization.SNAPSHOT_VERSION}", errorCode = "HANDLER_ERROR" as string } );
+
+			if ( envelope["root"] is not JsonObject rootRec )
+				return Task.FromResult<object>( new { success = false, error = "Snapshot missing 'root' object", errorCode = "HANDLER_ERROR" as string } );
+
+			GameObject parent = null;
+			if ( parameters.TryGetProperty( "parentId", out var pidEl ) && pidEl.ValueKind != JsonValueKind.Null )
+			{
+				var pidStr = pidEl.GetString();
+				if ( !string.IsNullOrEmpty( pidStr ) )
+				{
+					if ( !Guid.TryParse( pidStr, out var pidGuid ) )
+						return Task.FromResult<object>( new { success = false, error = "Invalid parentId GUID", errorCode = "INVALID_PARAMS" as string } );
+					parent = scene.Directory.FindByGuid( pidGuid );
+					if ( parent == null )
+						return Task.FromResult<object>( new { success = false, error = $"parentId GameObject not found: {pidStr}", errorCode = "HANDLER_ERROR" as string } );
+				}
+			}
+
+			var root = GoTreeSerialization.InstantiateGo( scene, rootRec, parent, created );
+
+			// Optional position override on the new root.
+			if ( parameters.TryGetProperty( "position", out var posEl ) )
+				root.WorldPosition = ClaudeBridge.ParseVector3( posEl );
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					instantiated = true,
+					rootId = root.Id.ToString(),
+					gameObjectCount = created.Count,
+					parentId = parent?.Id.ToString(),
+				}
+			} );
+		}
+		catch ( Exception ex )
+		{
+			// Atomicity (Phase B.2 R4): destroy everything we created before bailing.
+			foreach ( var g in created )
+			{
+				try { g.Destroy(); } catch { /* best-effort cleanup */ }
+			}
+			return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string, destroyed = created.Count } );
+		}
+	}
+}
+
+/// <summary>
+/// Frame the editor camera on a GameObject. Uses SceneEditorSession.FrameTo
+/// when available, falls back to selection-only on older builds.
+/// </summary>
+public class CameraFocusObjectHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var session = SceneEditorSession.Active;
+			var scene = session?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "id" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var bounds = go.GetBounds();
+			bool framed = TryFrameTo( session, bounds );
+			session.Selection.Set( go );
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					framed,
+					selected = true,
+					id = idStr,
+					bounds = new
+					{
+						mins = new { x = bounds.Mins.x, y = bounds.Mins.y, z = bounds.Mins.z },
+						maxs = new { x = bounds.Maxs.x, y = bounds.Maxs.y, z = bounds.Maxs.z },
+					}
+				}
+			} );
+		}
+		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+
+	internal static bool TryFrameTo( SceneEditorSession session, BBox bounds )
+	{
+		// FrameTo is a method on SceneEditorSession in newer s&box builds. We invoke
+		// via reflection so the bridge compiles even on builds where it's missing.
+		try
+		{
+			var m = session.GetType().GetMethod( "FrameTo", new[] { typeof( BBox ) } );
+			if ( m == null ) return false;
+			m.Invoke( session, new object[] { bounds } );
+			return true;
+		}
+		catch { return false; }
+	}
+}
+
+/// <summary>Frame the editor camera on an explicit world-space bounding box.</summary>
+public class CameraFrameBoundsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var session = SceneEditorSession.Active;
+			if ( session == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var mins = ClaudeBridge.ParseVector3( parameters.GetProperty( "min" ) );
+			var maxs = ClaudeBridge.ParseVector3( parameters.GetProperty( "max" ) );
+			var bounds = new BBox( mins, maxs );
+			bool framed = CameraFocusObjectHandler.TryFrameTo( session, bounds );
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					framed,
+					bounds = new
+					{
+						mins = new { x = bounds.Mins.x, y = bounds.Mins.y, z = bounds.Mins.z },
+						maxs = new { x = bounds.Maxs.x, y = bounds.Maxs.y, z = bounds.Maxs.z },
+					}
+				}
+			} );
 		}
 		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
 	}

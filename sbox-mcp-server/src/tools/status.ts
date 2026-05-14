@@ -41,6 +41,9 @@ export function registerStatusTools(
         }
       }
 
+      // Phase A.C.3.13 — surface heartbeat / demux / protocol state.
+      const hb = bridge.getHeartbeatState();
+      const lastStatus = bridge.getLastStatus();
       const status = {
         connected,
         host: bridge.getHost(),
@@ -50,6 +53,16 @@ export function registerStatusTools(
           ? new Date(bridge.getLastPongTime()).toISOString()
           : null,
         editorVersion,
+        protocol_version: lastStatus?.protocol_version ?? null,
+        addonVersion: lastStatus?.addonVersion ?? null,
+        editorPid: lastStatus?.editorPid ?? null,
+        protocolMismatch: bridge.hasProtocolMismatch(),
+        watchMode: hb.watchMode,
+        pingMissCount: hb.pingMissCount,
+        lastPongAgeMs: hb.lastPongAgeMs,
+        pendingRequestCount: hb.pendingRequestCount,
+        heartbeatActive: hb.heartbeatActive,
+        reconnecting: hb.reconnecting,
       };
 
       const text = connected

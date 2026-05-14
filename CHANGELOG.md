@@ -4,6 +4,95 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-14
+
+**Transport hardening + Phase 3 v3 tools + addon-sync infrastructure + sbox-game-dev skill.**
+
+140 canonical TS tools / 125 C# handlers / 15 TS-only / 34 JTC-compat aliases + 1 Lou-rename = **175 runtime-registered total**. JTC parity: still 48/48 (100%). Addon wire protocol: **v1** (new this release).
+
+### Added — wire-protocol versioning (Phase 0.1)
+
+The IPC envelope between the C# bridge and the Node MCP server is now versioned. status.json carries `protocol_version: 1`, `addonVersion`, and `editorPid`; the `ping` handler echoes the bridge's protocol version too. On connect, `BridgeClient` asserts the version matches its own `PROTOCOL_VERSION` constant:
+
+- **match**: silent accept.
+- **mismatch**: sets `hasProtocolMismatch()` flag, emits a `mismatch` event, logs a warning. Tool calls can still attempt to round-trip.
+- **missing** (pre-1.4.0 bridge): one-shot soft-warn, continue in compat mode.
+
+`PROTOCOL_VERSION` will only bump on breaking IPC changes (envelope shape, status.json key renames). v1 = the post-Phase-0 envelope shipped in v1.3.0.
+
+### Added — canonical addon sync infrastructure (Phase 0.2)
+
+The C# bridge addon now has ONE canonical source: `sbox-bridge-addon/Editor/MyEditorMenu.cs`. The live runtime copy lives at `<sbox-project>/Libraries/claudebridge/Editor/MyEditorMenu.cs`. Two scripts copy the canonical into the live location:
+
+- `sbox-mcp-server/scripts/sync-addon.ps1` (PowerShell)
+- `sbox-mcp-server/scripts/sync-addon.sh` (Bash, POSIX-portable)
+
+Both refuse to run without an explicit `-Target` / `$SBOX_PROJECT_LIB`, compute SHA256 before and after, and bail no-op when already in sync.
+
+Drift detection: `node scripts/verify-addon-sync.mjs` returns `match` / `drift` / `skipped` / `missing-target` / `missing-canonical`. The vitest `test/addon-sync.test.ts` smoke-tests the infrastructure and — when `SBOX_PROJECT_LIB` is set in the env — fails on drift. In a clean clone with no target configured, it skips cleanly (CI safe).
+
+### Added — test scaffolding (Phase 0.3)
+
+New `test/helpers/` directory:
+
+- `mock-ipc-dir.ts` — disposable IPC-dir fixture (`makeMockIpcDir()`). Returns helpers for `writeStatus`, `writeResponse`, `writeRequest`, `list`, `cleanup`. Each test gets its own tmpdir.
+- `mock-bridge.ts` — minimal stand-in for the C# bridge. Polls the fixture's ipcDir, echoes back `res_*.json` envelopes. Custom handlers + artificial delays supported. Used by `test/transport.test.ts` for the heartbeat / demux / orphan-sweep tests.
+
+Live integration tests now opt-in via `SBOX_BRIDGE_LIVE=1` so default `npm test` runs entirely offline.
+
+### Added — docs templating (Phase 0.4)
+
+Single source of truth for tool-inventory counts:
+
+- `scripts/gen-status.mjs` — regex-scans `src/tools/*.ts` (`server.tool("X", ...)`), `MyEditorMenu.cs` (`Register("X", ...)`), `ts-only-tools.json`, and `jtc-aliases.ts` (top-level keys only — nested schema keys are correctly excluded). Writes `.omc/status.json`.
+- `scripts/inject-status.mjs` — reads `.omc/status.json` and replaces `<!-- BEGIN STATUS:counts -->` / `<!-- BEGIN STATUS:inventory -->` blocks in target markdown files. Exit code 2 on drift (CI hook ready). `--write` to apply.
+
+New npm scripts: `docs:gen-status`, `docs:inject-status`, `docs:sync`, `docs:check`.
+
+### Added — transport hardening (Phase A)
+
+The `BridgeClient` got a substantial rewrite:
+
+- **3-strike heartbeat** (A.C.3.10) — `startHeartbeat(intervalMs, timeoutMs)` pings via `measureLatency()` on a self-rescheduling timer (NOT `setInterval`, so we never have two pings in flight at once). After `maxMissBeforeDisconnect` (default 3) consecutive misses, the client transitions to disconnected, emits a `disconnect` event, and starts a reconnect loop that polls status.json every 2 s. When the bridge comes back, the next heartbeat tick emits `reconnect`.
+- **Shared `fs.watch` + demux** (A.C.3.11) — a single watcher on the IPC dir wakes up the right pending request by id (`pending: Map<id, resolver>`). Concurrent `bridge.send()` calls no longer thrash with per-call setInterval polls. Race fixes: pending registered BEFORE `fs.writeFileSync(req)`; filename filter ignores `events.json` / `status.json`; Windows null-filename falls back to readdirSync scan; envelope-id assertion catches mismatched res files. The 50 ms polling is kept as a fallback for flaky Windows tmpdirs.
+- **Scoped orphan sweep** (A.C.3.12) — first successful connect sweeps `req_*.json` / `res_*.json` older than `STARTUP_ORPHAN_AGE_MS` (default 10 min). Nothing outside the `req|res_*.json` pattern is touched. Concurrent MCP-server instances keep their in-flight requests.
+- **New status fields** (A.C.3.13) — C# writes `protocol_version`, `addonVersion`, `editorPid`. TS `get_bridge_status` adds `watchMode`, `pingMissCount`, `lastPongAgeMs`, `pendingRequestCount`, `heartbeatActive`, `reconnecting`, `protocolMismatch`.
+- **`sendBatch` dropped** (A.C.3.14) — dead code (no callers, non-atomic, redundant with `Promise.all([send, send, ...])` once the demux landed). The shared comment on `IsHandlerFailure` in C# was updated to note the historical BatchHandler caller is gone.
+
+Graceful shutdown: `bridge.disconnect()` clears timers, closes the watcher, resolves in-flight requests with `BRIDGE_DISCONNECTED`. `index.ts` wires SIGINT/SIGTERM to call it.
+
+### Added — 4 Phase 3 v3 tools (Phase B)
+
+- **`snapshot_gameobject_tree(rootId, outputPath)`** — serialize a subtree to JSON. Round-trips name, enabled, tags, transform, and primitive component property values (bool / string / numbers / `Vector3` / `Rotation` / `Color` / enums). Reference-typed properties land in a per-component `_skippedProperties` array. Intentionally narrower than full scene serialization — see `.omc/research/snapshot-restore-deferred.md` (forthcoming) for the rationale.
+- **`instantiate_gameobject_tree(jsonPath, parentId?, position?)`** — reverse direction. Creates new GameObjects with fresh GUIDs under `parentId` (or scene root). Property values feed back through `TypeLibrary.SetValue` with the same type coercion as `set_property`. **Atomic-or-nothing**: every newly-created GameObject is tracked, and on any failure they're all destroyed before the error returns.
+- **`camera_focus_object(id)`** — frames the editor camera on a GameObject's bounds via reflection-invoked `SceneEditorSession.FrameTo(BBox)`. Falls back to selection-only on builds where `FrameTo` isn't exposed. Distinct from the existing `focus_object` which is selection-only.
+- **`camera_frame_bounds({min, max})`** — same, but with an explicit world-space `BBox`.
+
+### Added — sbox-game-dev skill (Phase D)
+
+New local skill at `~/.claude/skills/sbox-game-dev/SKILL.md`. Triggers on `s&box`, `sbox`, `gameobject`, `editor`, `scene`, `sbox-mcp`, `claudebridge`. Contains the decision tree, 8 unimplementable tools list, common pitfalls, addon sync workflow, response envelope shape, and the discovery-before-authoring pattern.
+
+### Deferred — `list_animations` (Phase B.1)
+
+Dropped from v1.4.0 per the plan's probe-first criterion. Without a live editor probe of `SkinnedModelRenderer` / `Model` / `AnimGraphResource` we cannot verify a readable-names API exists. Documented in `.omc/research/phase3v3-list-animations.md` with explicit reopen criteria.
+
+### Tool surface
+
+- Canonical TS tools: 136 → **140** (+4: snapshot_gameobject_tree, instantiate_gameobject_tree, camera_focus_object, camera_frame_bounds)
+- C# handlers: 121 → **125** (+4)
+- TS-only allowlist: 15 (unchanged)
+- Runtime-registered total: 171 → **175**
+- JTC parity: still **48/48 (100%)**
+- Wire protocol version: **v1** (new)
+
+### Heartbeat / latency
+
+5-sample heartbeat latency holds at v1.3.0 levels (avg ~29 ms, min ~14 ms). The shared `fs.watch` removes the per-call setInterval thrash but ping latency is dominated by the C# 20 ms timer, not Node-side polling.
+
+### Dropped — `sendBatch` + BatchHandler
+
+The TS `BridgeClient.sendBatch()` method is gone. Callers should use `Promise.all([bridge.send(...), bridge.send(...)])` instead — the C# bridge processes one request per editor frame, so concurrent `send`s naturally pipeline through the queue. The shared `fs.watch` demuxes responses by id without needing a special batch envelope. The `IsHandlerFailure` helper on the C# side no longer has a BatchHandler caller (it never had one in production — the comment was aspirational).
+
 ## [1.3.0] - 2026-05-14
 
 **Editor responsiveness release: top-level error envelope migration, push-based event capture, 8 new game-dev tools across lighting/VFX/animation/navmesh/camera, ~3x lower latency.**

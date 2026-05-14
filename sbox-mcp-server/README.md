@@ -49,7 +49,7 @@ Communication uses **file-based IPC** through `%TEMP%/sbox-bridge-ipc/`. The MCP
 
 WebSocket is not used — s&box's sandboxed C# environment does not allow `System.Net`.
 
-## Tools (121 working C# handlers + 15 TS-only = 136 canonical, plus 34 JTC aliases)
+## Tools (125 working C# handlers + 15 TS-only = 140 canonical, plus 34 JTC aliases + 1 Lou-rename = 175 runtime-registered total)
 
 | Category | Tools |
 |----------|-------|
@@ -80,8 +80,22 @@ pause_play, resume_play, get_console_output, get_compile_errors, clear_console, 
 ## Requirements
 
 - **Node.js 18+**
-- **s&box** with the Bridge Addon installed
+- **s&box** with the Bridge Addon installed (wire protocol v1, shipped in addon v1.4.0)
 - **Claude Code**
+
+## Addon sync
+
+The C# bridge addon has a canonical source in this repo and a live runtime copy in your s&box project's `Libraries/claudebridge/Editor/`. Keep them in sync with:
+
+```powershell
+pwsh scripts/sync-addon.ps1 -Target "C:\path\to\sbox-project\Libraries\claudebridge"
+```
+
+```bash
+./scripts/sync-addon.sh /path/to/sbox-project/Libraries/claudebridge
+```
+
+Drift detection: `npm run verify-addon-sync` (set `$env:SBOX_PROJECT_LIB` first).
 
 ## License
 

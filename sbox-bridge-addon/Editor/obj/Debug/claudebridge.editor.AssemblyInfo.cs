@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("claudebridge.editor")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+5a343cbd1e17be93d5109b4147412fdf29acd736")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8c4be536ac01bd70ccac721dd7364145b09533f4")]
 [assembly: System.Reflection.AssemblyProductAttribute("claudebridge.editor")]
 [assembly: System.Reflection.AssemblyTitleAttribute("claudebridge.editor")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

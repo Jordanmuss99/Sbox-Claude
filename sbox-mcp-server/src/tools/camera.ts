@@ -28,4 +28,32 @@ export function registerCameraTools(server: McpServer, bridge: BridgeClient): vo
       return { content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }] };
     }
   );
+
+  // Phase B.3 — v1.4.0 — camera framing.
+  server.tool(
+    "camera_focus_object",
+    "Frame the editor camera on a GameObject's bounds (real FrameTo, not just selection)",
+    {
+      id: z.string().describe("GUID of the GameObject"),
+    },
+    async (p) => {
+      const res = await bridge.send("camera_focus_object", p);
+      if (!res.success) return { content: [{ type: "text", text: `Error: ${res.error}` }] };
+      return { content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "camera_frame_bounds",
+    "Frame the editor camera on an explicit world-space bounding box",
+    {
+      min: z.object({ x: z.number(), y: z.number(), z: z.number() }).describe("BBox mins"),
+      max: z.object({ x: z.number(), y: z.number(), z: z.number() }).describe("BBox maxs"),
+    },
+    async (p) => {
+      const res = await bridge.send("camera_frame_bounds", p);
+      if (!res.success) return { content: [{ type: "text", text: `Error: ${res.error}` }] };
+      return { content: [{ type: "text", text: JSON.stringify(res.data, null, 2) }] };
+    }
+  );
 }
