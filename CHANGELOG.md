@@ -4,6 +4,53 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-05-15
+
+**list_animations ships — the v1.4.0 deferred tool, probe-verified and live-validated.**
+
+141 canonical TS tools / 128 C# handlers / 13 TS-only / 34 JTC-compat aliases + 1 Lou-rename = **176 runtime-registered total**. JTC parity preserved at 48/48 (100%). Wire protocol unchanged (v1).
+
+### Added — `list_animations`
+
+Was deferred from v1.4.0 per the probe-first criterion. Live-probed `SkinnedModelRenderer` this session and found three readable-name accessors: `Sequence.SequenceNames` (IReadOnlyList<string>), `Morphs.Names` (string[]), and `AnimationGraph.ParamCount` + `GetParameterName(int)` + `GetParameterType(int)` for graph parameters. All three are enumerable — the "opaque IDs only" drop criterion did not apply.
+
+The tool takes a GameObject GUID, finds its SkinnedModelRenderer, and returns:
+- `modelPath` — resolved .vmdl path
+- `animationGraphPath` — resolved AnimationGraph resource path (null if no graph)
+- `useAnimGraph` — bool flag
+- `sequences[]` + `sequenceCount` — every animation sequence baked into the .vmdl
+- `currentSequence` — `{ name, duration, timeNormalized, looping, blending, playbackRate, isFinished }` for the actively-set sequence
+- `morphs[]` + `morphCount` — every morph target on the model
+- `parameters[]` + `parameterCount` — `{ index, name, type }` for each AnimationGraph parameter (empty when no graph is assigned)
+
+Live-validated against `models/citizen/citizen.vmdl`: 465 sequences (Eyes_1D, Run_N, Jump_Standing, etc.), 36 morphs (full facial-expression set), 0 parameters (citizen has no AnimationGraph by default).
+
+Defensive: each accessor is wrapped in its own try/catch so a missing/unloaded model or malformed graph degrades gracefully (returns empty arrays for those subsections, success=true overall).
+
+Caveat — `set_property` on `Model`: the existing generic `set_property` tool serializes the path string but does not load the Model resource (reference types are skipped). To assign a model that actually loads, use the dedicated `assign_model` tool. This was discovered during live-test and is unchanged behavior.
+
+### Tool surface
+
+- Canonical TS tools: 140 → **141** (+1)
+- C# handlers: 127 → **128** (+1)
+- TS-only allowlist: 13 (unchanged)
+- Runtime-registered total: 175 → **176**
+- JTC parity: still **48/48 (100%)**
+- Wire protocol version: **v1** (unchanged)
+- Unimplementable: still 6 (pause_play, resume_play, clear_console, build_project, clean_build, prepare_publish)
+
+### Updated
+
+- `sbox-bridge-addon/Editor/MyEditorMenu.cs` — `ListAnimationsHandler` class + register call
+- `sbox-mcp-server/src/tools/animation.ts` — `list_animations` server.tool registration with JSDoc'd accessor map
+- `sbox-mcp-server/test/parity.test.ts` — expected counts 141/128/176
+- `sbox-mcp-server/package.json` — 1.4.0 → 1.5.0
+- `CLAUDE.md` + both `SKILL.md` copies via `npm run docs:sync`
+
+### Tests
+
+All 48 tests pass. Parity test confirms canonical_ts=141, cs_handlers=128. Live IPC round-trip validated against the citizen model.
+
 ## [1.4.1] - 2026-05-14
 
 **Compile/build observability via NLog parsing. 8 unimplementable tools → 6.**

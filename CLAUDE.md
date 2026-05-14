@@ -2,12 +2,12 @@
 
 > Let non-coders build s&box games through conversation with Claude Code.
 
-## Status: 140 canonical TS tools / 125 C# handlers / 15 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 175 runtime-registered total)
+## Status: 141 canonical TS tools / 128 C# handlers / 13 TS-only / 34 JTC-compat aliases + 1 Lou rename (= 176 runtime-registered total)
 
-**Last updated:** 2026-05-14 (v1.4.0)
+**Last updated:** 2026-05-15 (v1.5.0)
 **Bridge:** File-based IPC ✅ working on main thread
 **Wire protocol:** v1 (asserted on connect via status.json `protocol_version`)
-**Handlers:** 125 compiled and registered (TS canonicals minus 15 TS-only = 125 paired with C#)
+**Handlers:** 128 compiled and registered (TS canonicals minus 13 TS-only = 128 paired with C#)
 **JTC parity:** **48 / 48 (100%)** 🎉 — full parity 2026-05-13 (S8 + S9). **S10 bonus**: real `get_console_output` (NLog capture beyond JTC's manual-buffer approach).
 **Not implementable:** 6 tools (no s&box API exists — see "Known Issues"). These overlap with the TS-only allowlist. S10 (2026-05-13) moved `get_console_output` out of this list (NLog `MemoryTarget` via reflection). v1.4.1 (2026-05-14) moved `get_compile_errors` and `get_build_status` out by parsing Roslyn diagnostics out of the same NLog buffer.
 

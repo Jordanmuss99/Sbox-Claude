@@ -356,6 +356,7 @@ public static class ClaudeBridge
 		Register( "set_light_properties",    new SetLightPropertiesHandler() );
 		Register( "create_particle_effect",  new CreateParticleEffectHandler() );
 		Register( "play_animation",          new PlayAnimationHandler() );
+		Register( "list_animations",         new ListAnimationsHandler() );
 		Register( "build_navmesh",           new BuildNavMeshHandler() );
 		Register( "query_navmesh",           new QueryNavMeshHandler() );
 		Register( "get_editor_camera",       new GetEditorCameraHandler() );
@@ -6320,5 +6321,114 @@ public class GetBuildStatusHandler : IBridgeHandler
 			bufferSize = snapshot.Count,
 			note = "Derived from NLog buffer. Compiles that ran before BridgeLogTarget attached are invisible. status 'unknown' = no compile markers in buffer (e.g. clean session with no recompiles).",
 		} );
+	}
+}
+
+/// <summary>
+/// List animation sequences, morphs, and anim-graph parameters for a SkinnedModelRenderer.
+/// v1.5.0 - probe-verified against SequenceAccessor.SequenceNames + MorphAccessor.Names +
+/// AnimationGraph.ParamCount/GetParameterName/GetParameterType.
+/// </summary>
+public class ListAnimationsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		try
+		{
+			var scene = SceneEditorSession.Active?.Scene;
+			if ( scene == null )
+				return Task.FromResult<object>( new { success = false, error = "No active scene", errorCode = "HANDLER_ERROR" as string } );
+
+			var idStr = parameters.GetProperty( "id" ).GetString();
+			if ( !Guid.TryParse( idStr, out var guid ) )
+				return Task.FromResult<object>( new { success = false, error = "Invalid GUID", errorCode = "INVALID_PARAMS" as string } );
+
+			var go = scene.Directory.FindByGuid( guid );
+			if ( go == null )
+				return Task.FromResult<object>( new { success = false, error = $"GameObject not found: {idStr}", errorCode = "HANDLER_ERROR" as string } );
+
+			var renderer = go.GetComponent<SkinnedModelRenderer>();
+			if ( renderer == null )
+				return Task.FromResult<object>( new { success = false, error = "No SkinnedModelRenderer on this GameObject", errorCode = "HANDLER_ERROR" as string } );
+
+			// Sequences
+			var sequences = Array.Empty<string>();
+			object currentSeq = null;
+			try
+			{
+				var seqAcc = renderer.Sequence;
+				if ( seqAcc != null )
+				{
+					if ( seqAcc.SequenceNames != null )
+						sequences = seqAcc.SequenceNames.ToArray();
+					currentSeq = new
+					{
+						name = seqAcc.Name,
+						duration = seqAcc.Duration,
+						timeNormalized = seqAcc.TimeNormalized,
+						looping = seqAcc.Looping,
+						blending = seqAcc.Blending,
+						playbackRate = seqAcc.PlaybackRate,
+						isFinished = seqAcc.IsFinished,
+					};
+				}
+			}
+			catch { /* model not loaded yet or accessor unavailable */ }
+
+			// Morphs
+			var morphs = Array.Empty<string>();
+			try
+			{
+				var morphAcc = renderer.Morphs;
+				if ( morphAcc?.Names != null )
+					morphs = morphAcc.Names;
+			}
+			catch { }
+
+			// Anim-graph parameters - walk via ParamCount + GetParameterName + GetParameterType
+			var parameters_list = new List<object>();
+			string graphPath = null;
+			try
+			{
+				var graph = renderer.AnimationGraph;
+				if ( graph != null )
+				{
+					graphPath = graph.ResourcePath;
+					var n = graph.ParamCount;
+					for ( int i = 0; i < n; i++ )
+					{
+						string pname = null;
+						string ptype = null;
+						try { pname = graph.GetParameterName( i ); } catch { }
+						try { ptype = graph.GetParameterType( i )?.Name; } catch { }
+						parameters_list.Add( new { index = i, name = pname, type = ptype } );
+					}
+				}
+			}
+			catch { }
+
+			return Task.FromResult<object>( new
+			{
+				success = true,
+				data = new
+				{
+					id = idStr,
+					modelPath = renderer.Model?.ResourcePath,
+					animationGraphPath = graphPath,
+					useAnimGraph = renderer.UseAnimGraph,
+					sequenceCount = sequences.Length,
+					sequences,
+					currentSequence = currentSeq,
+					morphCount = morphs.Length,
+					morphs,
+					parameterCount = parameters_list.Count,
+					parameters = parameters_list,
+				}
+			} );
+		}
+		catch ( Exception ex )
+		{
+			return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } );
+		}
 	}
 }
