@@ -6,8 +6,6 @@
     "clear_console",
     "export_project",
     "get_bridge_status",
-    "get_build_status",
-    "get_compile_errors",
     "pause_play",
     "prepare_publish",
     "resume_play",

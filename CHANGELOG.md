@@ -4,6 +4,51 @@ All notable changes to the s&box Claude Bridge.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-14
+
+**Compile/build observability via NLog parsing. 8 unimplementable tools → 6.**
+
+140 canonical TS tools / 127 C# handlers / 13 TS-only / 34 JTC-compat aliases + 1 Lou-rename. Total runtime-registered: 175 (unchanged — we moved 2 handlers from TS-only to C#-backed).
+
+### Added — `get_compile_errors`
+
+Was a TS-only stub since v1.0 (no s&box C# compile API exists). Now backed by a C# handler that parses Roslyn diagnostics out of the same NLog `MemoryTarget` ring buffer S10 attached for `get_console_output`. Recognises both Roslyn-style location-prefixed entries (`Code/Foo.cs(10,3): error CS1002: ; expected`) and bare entries (`error CS1002: ; expected`). Returns structured `{ code, severity, message, file, line, col, timestamp, loggerName }` records.
+
+New schema: `{ since?: ISO, severity?: 'all'|'error'|'warning'|'info' (default 'error'), limit?: 1-1000 (default 100) }`. Response shape keeps the old `errors[]` / `warnings[]` keys for callers that already used them, and adds a unified `diagnostics[]` array.
+
+Caveat: best-effort observability — only sees entries written AFTER BridgeLogTarget attached on bridge startup. Compiles that ran before that point are invisible. Live test by introducing a real syntax error.
+
+### Added — `get_build_status`
+
+Was also a TS-only stub. Now derives state from the same NLog buffer by walking newest-first and stopping at the first compile marker (`Compile of 'X' Failed:` / `Compile of 'X' Succeeded` / `Compiling 'X'`). Returns `{ status: 'failed'|'succeeded'|'compiling'|'unknown', packageId, lastCompileTimestamp, errors, warnings, bufferSize, note }`. When status is `failed`, walks forward from the marker counting CS-prefixed diagnostic lines until the next compile marker.
+
+`status: "unknown"` is normal for a clean session where no recompile has happened since bridge startup — not an error.
+
+### Added — `CompileLogParser` helper
+
+Shared parsing logic between the two new handlers. Three regexes for compile-state markers (failed/succeeded/compiling), one regex for the Roslyn-style diagnostic format, one for the `path(line,col)` location prefix. Both handlers serialize through the same `SerializeDiag` shape. Lives next to `BridgeLogTarget` in `MyEditorMenu.cs` as a static class.
+
+### Tool surface
+
+- Canonical TS tools: 140 (unchanged)
+- C# handlers: 125 → **127** (+2)
+- TS-only allowlist: 15 → **13** (-2)
+- Not implementable: 8 → **6** (pause_play, resume_play, clear_console, build_project, clean_build, prepare_publish remain genuinely unimplementable on s&box's API)
+- Total runtime-registered: 175 (unchanged — we shifted handlers, didn't add tools)
+
+### Updated
+
+- `CLAUDE.md` — "Not implementable" header updated, status block shows 127 handlers
+- Both `~/.claude/skills/sbox-game-dev/SKILL.md` and `~/.agents/skills/sbox-game-dev/SKILL.md` — "Eight tools that DO NOT WORK" section is now "Six tools", with a positive-list of what DOES work (`get_console_output`, `get_compile_errors`, `get_build_status`)
+- `src/tools/console.ts` — `get_compile_errors` now accepts `since` / `severity` / `limit` params, surfaces the `note` field when buffer is empty
+- `src/ts-only-tools.json` — removed `get_compile_errors`, `get_build_status`
+- `test/parity.test.ts` — expected cs_handlers 127, ts_only 13
+- `.omc/status.json` — regenerated via `npm run docs:sync`
+
+### Tests
+
+All 48 tests still pass. No new tests — the C# parser logic is exercised live against the s&box editor; TS-side just passes the params through.
+
 ## [1.4.0] - 2026-05-14
 
 **Transport hardening + Phase 3 v3 tools + addon-sync infrastructure + sbox-game-dev skill.**

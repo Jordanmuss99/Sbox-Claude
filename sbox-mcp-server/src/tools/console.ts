@@ -68,30 +68,42 @@ export function registerConsoleTools(
   );
 
   // ── get_compile_errors ───────────────────────────────────────────
+  // v1.4.1: backed by C# handler that parses BridgeLogTarget NLog buffer for
+  // Roslyn-style "error CS####:" / "warning CS####:" diagnostics. The bridge
+  // can only surface entries written AFTER BridgeLogTarget attached (S10).
   server.tool(
     "get_compile_errors",
-    "Get current C# compilation errors and warnings from s&box. Returns file path, line number, column, error code, and message for each diagnostic",
-    {},
-    async () => {
-      const res = await bridge.send("get_compile_errors");
+    "Get current C# compilation errors and warnings from s&box. Returns file path, line number, column, error code, and message for each diagnostic. Best-effort: only sees diagnostics logged via NLog after the bridge attached its capture target.",
+    {
+      since: z.string().optional().describe("ISO timestamp; only return diagnostics newer than this"),
+      severity: z.enum(["all", "error", "warning", "info"]).optional().describe("Filter by severity (default 'error')"),
+      limit: z.number().int().optional().describe("Max diagnostics to return (1-1000, default 100)"),
+    },
+    async (params) => {
+      const res = await bridge.send("get_compile_errors", params);
       if (!res.success) {
         return { content: [{ type: "text", text: `Error: ${res.error}` }] };
       }
 
-      const data = res.data as { errors?: unknown[]; warnings?: unknown[] } | undefined;
+      const data = res.data as {
+        count?: number;
+        totalMatching?: number;
+        diagnostics?: unknown[];
+        errors?: unknown[];
+        warnings?: unknown[];
+        note?: string;
+      } | undefined;
       const errors = data?.errors ?? [];
       const warnings = data?.warnings ?? [];
 
       let text: string;
       if (errors.length === 0 && warnings.length === 0) {
-        text = "No compilation errors or warnings. Code is clean!";
+        text = data?.note ?? "No compilation errors or warnings. Code is clean!";
       } else {
         text = JSON.stringify(res.data, null, 2);
       }
 
-      return {
-        content: [{ type: "text", text }],
-      };
+      return { content: [{ type: "text", text }] };
     }
   );
 

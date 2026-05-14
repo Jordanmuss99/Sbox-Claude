@@ -344,6 +344,8 @@ public static class ClaudeBridge
 		// Console capture (S10, 2026-05-13) — register handler FIRST so it's reachable
 		// even if log-capture attachment fails (handler will surface the attach error).
 		Register( "get_console_output",       new GetConsoleOutputHandler() );
+		Register( "get_compile_errors",       new GetCompileErrorsHandler() );
+		Register( "get_build_status",         new GetBuildStatusHandler() );
 		Register( "ping",                   new PingHandler() );
 		try { BridgeLogTarget.EnsureAttached(); }
 		catch ( Exception ex ) { QueueDeferredLog( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
@@ -6084,5 +6086,239 @@ public class CameraFrameBoundsHandler : IBridgeHandler
 			} );
 		}
 		catch ( Exception ex ) { return Task.FromResult<object>( new { success = false, error = ex.Message, errorCode = "HANDLER_ERROR" as string } ); }
+	}
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// Compile-error / build-status surface (v1.4.1, 2026-05-14)
+// ══════════════════════════════════════════════════════════════════
+// Both handlers parse the NLog ring buffer captured by BridgeLogTarget.
+// We treat this as a "best-effort observability" surface: we can only see
+// what the editor has logged through NLog (which it does for compile
+// failures via "Compile of '...' Failed:" markers + Roslyn-style
+// "error CSxxxx: ..." lines), and only after the bridge attached its
+// MemoryTarget. Compiles that ran before the attach are invisible.
+
+public static class CompileLogParser
+{
+	// s&box compile-failure marker emitted by the addon compiler shim.
+	// Example: "Compile of 'local.claudebridge.editor' Failed:"
+	static readonly Regex FailedRe = new Regex(
+		@"^Compile of '([^']+)' Failed:?\s*$", RegexOptions.Compiled );
+	static readonly Regex SucceededRe = new Regex(
+		@"^Compile of '([^']+)' (?:Succeeded|OK|Complete)", RegexOptions.Compiled );
+	static readonly Regex CompilingRe = new Regex(
+		@"^(?:Compiling|Recompiling)\s+'?([^'\s]+)'?", RegexOptions.Compiled );
+
+	// Roslyn-style diagnostic. Accepts both forms:
+	//   path/to/file.cs(line,col): error CS####: message
+	//   error CS####: message
+	static readonly Regex DiagRe = new Regex(
+		@"^(?:(?<file>[^:()\n]+(?:\(\d+,\d+\))?)\s*:\s*)?(?<sev>error|warning|info)\s+(?<code>[A-Z]{2}\d{3,5}):\s*(?<msg>.*)$",
+		RegexOptions.Compiled | RegexOptions.IgnoreCase );
+
+	static readonly Regex LocRe = new Regex(
+		@"^(?<f>.+?)\((?<l>\d+),(?<c>\d+)\)$", RegexOptions.Compiled );
+
+	public class Diag
+	{
+		public string Severity;
+		public string Code;
+		public string Message;
+		public string File;
+		public int? Line;
+		public int? Col;
+		public string Timestamp;
+		public string LoggerName;
+	}
+
+	public class CompileState
+	{
+		public string Status;
+		public string PackageId;
+		public string Timestamp;
+		public int ErrorCount;
+		public int WarningCount;
+	}
+
+	static (string ts, string level, string logger, string message) ParseLogEntry( string raw )
+	{
+		if ( string.IsNullOrEmpty( raw ) ) return ("", "", "", "");
+		var parts = raw.Split( new[] { '|' }, 4 );
+		if ( parts.Length < 4 ) return ("", "", "", raw);
+		return (parts[0], parts[1].ToLowerInvariant(), parts[2], parts[3]);
+	}
+
+	public static List<Diag> ExtractDiagnostics( IList<string> raw, string sinceIso, string severityFilter )
+	{
+		var result = new List<Diag>();
+		DateTime? sinceDt = null;
+		if ( !string.IsNullOrEmpty( sinceIso ) && DateTime.TryParse( sinceIso, out var parsed ) )
+			sinceDt = parsed.ToUniversalTime();
+
+		var filter = string.IsNullOrEmpty( severityFilter ) ? "error" : severityFilter.ToLowerInvariant();
+		foreach ( var line in raw )
+		{
+			var (ts, _, logger, msg) = ParseLogEntry( line );
+			if ( sinceDt.HasValue && DateTime.TryParse( ts, out var entryDt )
+				 && entryDt.ToUniversalTime() < sinceDt.Value ) continue;
+
+			var m = DiagRe.Match( msg ?? "" );
+			if ( !m.Success ) continue;
+			var sev = m.Groups["sev"].Value.ToLowerInvariant();
+			if ( filter != "all" && filter != sev ) continue;
+
+			var d = new Diag
+			{
+				Severity = sev,
+				Code = m.Groups["code"].Value,
+				Message = m.Groups["msg"].Value.Trim(),
+				Timestamp = ts,
+				LoggerName = logger,
+			};
+			var fileRaw = m.Groups["file"].Value;
+			if ( !string.IsNullOrEmpty( fileRaw ) )
+			{
+				var lm = LocRe.Match( fileRaw );
+				if ( lm.Success )
+				{
+					d.File = lm.Groups["f"].Value;
+					if ( int.TryParse( lm.Groups["l"].Value, out var ln ) ) d.Line = ln;
+					if ( int.TryParse( lm.Groups["c"].Value, out var cl ) ) d.Col = cl;
+				}
+				else
+				{
+					d.File = fileRaw;
+				}
+			}
+			result.Add( d );
+		}
+		return result;
+	}
+
+	public static CompileState DeriveStatus( IList<string> raw )
+	{
+		// Walk newest-first; stop at the first compile-marker we find.
+		for ( int i = raw.Count - 1; i >= 0; i-- )
+		{
+			var (ts, _, _, msg) = ParseLogEntry( raw[i] );
+			if ( string.IsNullOrEmpty( msg ) ) continue;
+
+			var fm = FailedRe.Match( msg );
+			if ( fm.Success )
+			{
+				var st = new CompileState { Status = "failed", PackageId = fm.Groups[1].Value, Timestamp = ts };
+				CountFollowing( raw, i, st );
+				return st;
+			}
+			var sm = SucceededRe.Match( msg );
+			if ( sm.Success )
+				return new CompileState { Status = "succeeded", PackageId = sm.Groups[1].Value, Timestamp = ts };
+			var cm = CompilingRe.Match( msg );
+			if ( cm.Success )
+				return new CompileState { Status = "compiling", PackageId = cm.Groups[1].Value, Timestamp = ts };
+		}
+		return new CompileState { Status = "unknown" };
+	}
+
+	static void CountFollowing( IList<string> raw, int markerIdx, CompileState st )
+	{
+		for ( int j = markerIdx + 1; j < raw.Count; j++ )
+		{
+			var (_, _, _, msg) = ParseLogEntry( raw[j] );
+			if ( string.IsNullOrEmpty( msg ) ) continue;
+			if ( FailedRe.IsMatch( msg ) || SucceededRe.IsMatch( msg ) || CompilingRe.IsMatch( msg ) ) break;
+			var m = DiagRe.Match( msg );
+			if ( !m.Success ) continue;
+			var sev = m.Groups["sev"].Value.ToLowerInvariant();
+			if ( sev == "error" ) st.ErrorCount++;
+			else if ( sev == "warning" ) st.WarningCount++;
+		}
+	}
+}
+
+public class GetCompileErrorsHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		if ( !BridgeLogTarget.Attached )
+			return Task.FromResult<object>( new
+			{
+				success = false,
+				error = $"BridgeLogTarget not attached: {BridgeLogTarget.AttachError ?? "unknown reason"}",
+				errorCode = "HANDLER_ERROR" as string,
+			} );
+
+		var snapshot = BridgeLogTarget.Snapshot();
+		var since = p.TryGetProperty( "since", out var sv ) ? sv.GetString() : null;
+		var severity = p.TryGetProperty( "severity", out var lv ) ? (lv.GetString() ?? "error").ToLowerInvariant() : "error";
+		var limit = p.TryGetProperty( "limit", out var ll ) ? ll.GetInt32() : 100;
+		if ( limit < 1 ) limit = 1;
+		if ( limit > 1000 ) limit = 1000;
+
+		var diags = CompileLogParser.ExtractDiagnostics( snapshot, since, severity );
+		var total = diags.Count;
+		diags.Reverse(); // newest first
+		var trimmed = diags.Take( limit ).ToList();
+
+		// Maintain a back-compat shape so the existing TS wrapper that looks for
+		// `errors` and `warnings` arrays still gets useful output.
+		var errors = trimmed.Where( d => d.Severity == "error" ).ToList();
+		var warnings = trimmed.Where( d => d.Severity == "warning" ).ToList();
+
+		return Task.FromResult<object>( new
+		{
+			count = trimmed.Count,
+			totalMatching = total,
+			severity,
+			since,
+			diagnostics = trimmed.Select( SerializeDiag ).ToArray(),
+			errors = errors.Select( SerializeDiag ).ToArray(),
+			warnings = warnings.Select( SerializeDiag ).ToArray(),
+			note = trimmed.Count == 0
+				? "No matching diagnostics in NLog buffer. Note: compiles that ran before BridgeLogTarget attached are invisible."
+				: null,
+		} );
+	}
+
+	static object SerializeDiag( CompileLogParser.Diag d ) => new
+	{
+		timestamp = d.Timestamp,
+		severity = d.Severity,
+		code = d.Code,
+		message = d.Message,
+		file = d.File,
+		line = d.Line,
+		col = d.Col,
+		loggerName = d.LoggerName,
+	};
+}
+
+public class GetBuildStatusHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement p )
+	{
+		if ( !BridgeLogTarget.Attached )
+			return Task.FromResult<object>( new
+			{
+				success = false,
+				error = $"BridgeLogTarget not attached: {BridgeLogTarget.AttachError ?? "unknown reason"}",
+				errorCode = "HANDLER_ERROR" as string,
+			} );
+
+		var snapshot = BridgeLogTarget.Snapshot();
+		var state = CompileLogParser.DeriveStatus( snapshot );
+
+		return Task.FromResult<object>( new
+		{
+			status = state.Status,
+			packageId = state.PackageId,
+			lastCompileTimestamp = state.Timestamp,
+			errors = state.ErrorCount,
+			warnings = state.WarningCount,
+			bufferSize = snapshot.Count,
+			note = "Derived from NLog buffer. Compiles that ran before BridgeLogTarget attached are invisible. status 'unknown' = no compile markers in buffer (e.g. clean session with no recompiles).",
+		} );
 	}
 }
