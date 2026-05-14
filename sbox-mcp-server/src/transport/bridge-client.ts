@@ -67,6 +67,7 @@ export interface BridgeResponse {
   success: boolean;
   data?: unknown;
   error?: string;
+  errorCode?: string;  // Phase 0 — one of: BRIDGE_DISCONNECTED, BRIDGE_TIMEOUT, HANDLER_NOT_FOUND, HANDLER_ERROR, INVALID_PARAMS
 }
 
 /**
@@ -276,7 +277,25 @@ export class BridgeClient {
   }
 
   /**
-   * Check if bridge is alive by looking for status file.
+   * Measure real IPC round-trip latency by sending a "ping" command to the C# bridge.
+   * This is an actual file-IPC round-trip, not a local filesystem stat.
+   * Returns latency in ms, or -1 if unreachable.
+   */
+  async measureLatency(timeoutMs = 5000): Promise<number> {
+    const start = Date.now();
+    try {
+      const res = await this.send("ping", {}, timeoutMs);
+      if (res.success) {
+        this.lastPongTime = Date.now();
+        return Date.now() - start;
+      }
+    } catch {}
+    return -1;
+  }
+
+  /**
+   * @deprecated Use measureLatency() for real IPC round-trip measurement.
+   * This method only reads status.json locally and does not contact the bridge.
    */
   async ping(): Promise<number> {
     const statusPath = path.join(this.ipcDir, "status.json");
@@ -319,6 +338,10 @@ export class BridgeClient {
 
   getLastPongTime(): number {
     return this.lastPongTime;
+  }
+
+  getIpcDir(): string {
+    return this.ipcDir;
   }
 
   disconnect(): void {

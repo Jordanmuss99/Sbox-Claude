@@ -90,11 +90,14 @@ public static class ClaudeBridge
 				handlerCount = _handlers.Count
 			} ), _utf8NoBom );
 
-			_running = true;
+		_running = true;
+
+			// Initialize event dispatcher for editor event capture
+			BridgeEventDispatcher.Initialize( _ipcDir );
 
 			// Use a Timer only to read request files from disk (IO is thread-safe)
 			// But queue the actual processing for the main thread
-			_pollTimer = new Timer( ReadRequestFiles, null, 500, 50 );
+			_pollTimer = new Timer( ReadRequestFiles, null, 500, 20 );
 
 			Log.Info( $"[SboxBridge] Bridge started — {_handlers.Count} handlers, IPC at {_ipcDir}" );
 			Log.Info( "[SboxBridge] s&box Claude Bridge by sboxskins.gg — https://sboxskins.gg" );
@@ -271,6 +274,7 @@ public static class ClaudeBridge
 		// Console capture (S10, 2026-05-13) — register handler FIRST so it's reachable
 		// even if log-capture attachment fails (handler will surface the attach error).
 		Register( "get_console_output",       new GetConsoleOutputHandler() );
+		Register( "ping",                   new PingHandler() );
 		try { BridgeLogTarget.EnsureAttached(); }
 		catch ( Exception ex ) { Log.Warning( $"[SboxBridge] EnsureAttached threw: {ex.Message}" ); }
 
@@ -358,9 +362,9 @@ public static class ClaudeBridge
 		var command = root.TryGetProperty( "command", out var cmdProp ) ? cmdProp.GetString() : null;
 
 		if ( string.IsNullOrEmpty( id ) )
-			return MakeError( null, "Missing 'id'" );
+			return MakeError( null, "Missing 'id'", "INVALID_PARAMS" );
 		if ( string.IsNullOrEmpty( command ) )
-			return MakeError( id, "Missing 'command'" );
+			return MakeError( id, "Missing 'command'", "INVALID_PARAMS" );
 
 		// Built-in status command
 		if ( command == "get_bridge_status" )
@@ -435,22 +439,83 @@ public static class ClaudeBridge
 			try
 			{
 				var paramsElement = root.TryGetProperty( "params", out var p ) ? p : default;
-				var result = await handler.Execute( paramsElement );
-				return JsonSerializer.Serialize( new { id, success = true, data = result } );
+				var result = await ExecuteCommand( command, paramsElement );
+				var (isFailure, errMsg, errCode) = IsHandlerFailure( result );
+				if ( isFailure )
+					return JsonSerializer.Serialize( new { id, success = false, error = errMsg, errorCode = errCode } );
+				object dataValue = result;
+				var resultType = result.GetType();
+				var innerSuccessProp = resultType.GetProperty( "success" );
+				if ( innerSuccessProp != null && innerSuccessProp.GetValue( result ) is bool ib && ib )
+				{
+					var dataProp = resultType.GetProperty( "data" );
+					if ( dataProp != null ) dataValue = dataProp.GetValue( result );
+				}
+				return JsonSerializer.Serialize( new { id, success = true, data = dataValue } );
 			}
 			catch ( Exception ex )
 			{
-				return MakeError( id, $"Handler error: {ex.Message}" );
+				return MakeError( id, $"Handler error: {ex.Message}", "HANDLER_ERROR" );
 			}
 		}
 
-		return MakeError( id, $"Unknown command: {command}" );
+		return MakeError( id, $"Unknown command: {command}", "HANDLER_NOT_FOUND" );
 	}
 
-	static string MakeError( string id, string message )
+	static string MakeError( string id, string message, string errorCode = null )
 	{
-		return JsonSerializer.Serialize( new { id, success = false, error = message } );
+		return JsonSerializer.Serialize( new { id, success = false, error = message, errorCode = errorCode ?? "BRIDGE_DISCONNECTED" } );
 	}
+
+	/// <summary>
+	/// Shared error detection — used by ProcessRequest AND BatchHandler.
+	/// Handles null results, bare {error} without success, and both JsonElement/reflection paths.
+	/// </summary>
+	public static (bool isFailure, string error, string errorCode) IsHandlerFailure( object result )
+	{
+		if ( result == null )
+			return (true, "Handler returned null", "HANDLER_ERROR");
+		if ( result is JsonElement je && je.ValueKind == JsonValueKind.Object )
+		{
+			if ( je.TryGetProperty( "success", out var sp ) && sp.ValueKind == JsonValueKind.False )
+			{
+				var err = je.TryGetProperty( "error", out var ep ) ? ep.GetString() : "Handler reported failure";
+				var ec = je.TryGetProperty( "errorCode", out var cp ) ? cp.GetString() : "HANDLER_ERROR";
+				return (true, err, ec);
+			}
+			if ( !je.TryGetProperty( "success", out _ ) && je.TryGetProperty( "error", out var bareErr ) )
+				return (true, bareErr.GetString() ?? "Handler reported failure", "HANDLER_ERROR");
+		}
+		var resultType = result.GetType();
+		var successProp = resultType.GetProperty( "success" );
+		if ( successProp != null && successProp.GetValue( result ) is bool b && !b )
+		{
+			var errProp = resultType.GetProperty( "error" );
+			var ecProp = resultType.GetProperty( "errorCode" );
+			var err = errProp?.GetValue( result ) as string ?? "Handler reported failure";
+			var ec = ecProp?.GetValue( result ) as string ?? "HANDLER_ERROR";
+			return (true, err, ec);
+		}
+		if ( successProp == null && resultType.GetProperty( "error" ) != null )
+		{
+			var errProp = resultType.GetProperty( "error" );
+			var ecProp = resultType.GetProperty( "errorCode" );
+			var err = errProp?.GetValue( result ) as string ?? "Handler reported failure";
+			var ec = ecProp?.GetValue( result ) as string ?? "HANDLER_ERROR";
+			return (true, err, ec);
+		}
+		return (false, null, null);
+	}
+
+	public static async Task<object> ExecuteCommand( string command, JsonElement? parameters = null )
+	{
+		if ( !_handlers.TryGetValue( command, out var handler ) )
+			return new { success = false, error = $"Unknown command: {command}", errorCode = "HANDLER_NOT_FOUND" as string };
+		try { return await handler.Execute( parameters ?? default ); }
+		catch ( Exception ex ) { return new { success = false, error = $"Handler error: {ex.Message}", errorCode = "HANDLER_ERROR" as string }; }
+	}
+
+	public static IEnumerable<string> GetRegisteredCommands() => _handlers.Keys;
 
 	// ── Shared helpers ────────────────────────────────────────────────────
 	internal static Vector3 ParseVector3( JsonElement e )
@@ -495,6 +560,95 @@ public static class ClaudeBridge
 			components = go.Components.GetAll().Select( c => c.GetType().Name ).ToArray(),
 			children   = go.Children.Select( c => SerializeGoTree( c ) ).ToArray()
 		};
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BridgeEventDispatcher — editor event capture system (Phase 2)
+// ═══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Captures editor lifecycle events (scene open/play/stop/save, selection changes,
+/// asset/resource modifications) and writes them as JSON-lines to events.json.
+/// Ring buffer capped at 1000 entries with atomic compaction via temp-file + replace.
+/// Every event carries a monotonic eventId and a sessionId GUID for session isolation.
+/// </summary>
+public static class BridgeEventDispatcher
+{
+	private static readonly object _eventLock = new();
+	private static string _eventsPath;
+	private static string _ipcDir;
+	private static string _sessionId;
+	private static long _nextEventId = 0;
+	private static int _writeCountSinceCompact = 0;
+	private static readonly Encoding _utf8 = new UTF8Encoding( false );
+
+	public static void Initialize( string ipcDir )
+	{
+		_ipcDir = ipcDir;
+		_eventsPath = Path.Combine( ipcDir, "events.json" );
+		_sessionId = Guid.NewGuid().ToString();
+		_nextEventId = 0;
+	}
+
+	public static void WriteEvent( string type, object data )
+	{
+		var entry = JsonSerializer.Serialize( new
+		{
+			eventId = Interlocked.Increment( ref _nextEventId ),
+			sessionId = _sessionId,
+			timestamp = DateTime.UtcNow.ToString( "o" ),
+			type,
+			data
+		} );
+
+		lock ( _eventLock )
+		{
+			File.AppendAllText( _eventsPath, entry + "\n", _utf8 );
+			_writeCountSinceCompact++;
+			var fileInfo = new FileInfo( _eventsPath );
+			if ( _writeCountSinceCompact >= 10 || fileInfo.Exists && fileInfo.Length >= 500_000 )
+			{
+				_writeCountSinceCompact = 0;
+				CompactIfNeeded();
+			}
+		}
+	}
+
+	private static void CompactIfNeeded()
+	{
+		if ( !File.Exists( _eventsPath ) ) return;
+		var lines = File.ReadAllLines( _eventsPath, Encoding.UTF8 );
+		if ( lines.Length <= 1000 ) return;
+		var kept = lines.Skip( lines.Length - 900 ).ToArray();
+		var tempPath = Path.Combine( _ipcDir, "events_compact.tmp" );
+		File.WriteAllText( tempPath, string.Join( "\n", kept ) + "\n", _utf8 );
+		try { File.Move( tempPath, _eventsPath, overwrite: true ); } catch ( IOException ) { /* Node may be reading — retry next compaction */ }
+	}
+
+	// ── Scene lifecycle hooks ────────────────────────────────────
+	[Event( "scene.open" )]
+	public static void OnSceneOpen( Scene scene ) => WriteEvent( "scene.open", new { sceneName = scene?.Name } );
+
+	[Event( "scene.play" )]
+	public static void OnScenePlay() => WriteEvent( "scene.play", new { } );
+
+	[Event( "scene.stop" )]
+	public static void OnSceneStop() => WriteEvent( "scene.stop", new { } );
+
+	[Event( "scene.saved" )]
+	public static void OnSceneSaved( Scene scene ) => WriteEvent( "scene.saved", new { sceneName = scene?.Name } );
+
+	// ── Selection hook ───────────────────────────────────────────
+	[Event( "hammer.selection.changed" )]
+	public static void OnSelectionChanged()
+	{
+		var sel = SceneEditorSession.Active?.Selection;
+		WriteEvent( "hammer.selection.changed", new
+		{
+			count = sel?.Count ?? 0,
+			ids = sel?.Select( g => g.Id.ToString() ).ToArray()
+		} );
 	}
 }
 
@@ -5066,4 +5220,19 @@ public class GetConsoleOutputHandler : IBridgeHandler
 			_ => true,
 		};
 	}
+
+/// <summary>
+/// Phase 0 — Real IPC round-trip latency. Called by bridge.measureLatency().
+/// </summary>
+public class PingHandler : IBridgeHandler
+{
+	public Task<object> Execute( JsonElement parameters )
+	{
+		return Task.FromResult<object>( new {
+			success = true,
+			data = new { pong = true, timestamp = DateTime.UtcNow.ToString( "o" ) }
+		} );
+	}
+}
+
 }

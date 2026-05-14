@@ -41,6 +41,8 @@ import { registerSceneSearchTools } from "./tools/scene-search.js";
 import { registerJtcAliasTools } from "./tools/jtc-aliases.js";
 import { registerDocsTools } from "./tools/docs.js";
 import { registerExecutionTools } from "./tools/execution.js";
+import { registerEditorEventsTools } from "./tools/editor-events.js";
+import { EventWatcher } from "./transport/event-watcher.js";
 
 // ── CLI flags ──────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -124,6 +126,8 @@ const bridge = new BridgeClient(
   process.env.SBOX_BRIDGE_HOST ?? "127.0.0.1",
   parseInt(process.env.SBOX_BRIDGE_PORT ?? "29015", 10)
 );
+const eventWatcher = new EventWatcher( bridge.getIpcDir() );
+
 
 // Register all tools
 registerProjectTools(server, bridge);
@@ -150,6 +154,7 @@ registerSceneSearchTools(server, bridge);
 registerDocsTools(server);
 registerExecutionTools(server, bridge);
 registerJtcAliasTools(server, bridge);
+registerEditorEventsTools(server, eventWatcher);
 
 /** Start the MCP server on stdio and attempt initial Bridge connection. */
 async function main(): Promise<void> {

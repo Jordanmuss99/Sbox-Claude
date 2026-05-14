@@ -27,7 +27,7 @@ export function registerStatusTools(
 
       if (connected) {
         // Measure round-trip ping
-        latencyMs = await bridge.ping();
+        latencyMs = await bridge.measureLatency();
 
         // Try to get editor version via project info
         try {
@@ -64,6 +64,18 @@ export function registerStatusTools(
           },
         ],
       };
+    }
+  );
+
+  // ── ping (internal — real IPC round-trip measurement) ──────────────
+  server.tool(
+    "ping",
+    "Internal: measure real IPC round-trip latency to the s&box Bridge",
+    {},
+    async () => {
+      const ms = await bridge.measureLatency();
+      if (ms < 0) return { content: [{ type: "text", text: "ping failed: bridge unreachable" }] };
+      return { content: [{ type: "text", text: `pong: ${ms}ms` }] };
     }
   );
 }

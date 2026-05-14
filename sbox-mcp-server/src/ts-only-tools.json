@@ -14,6 +14,7 @@
     "sbox_cache_status",
     "sbox_get_doc_page",
     "sbox_list_doc_categories",
-    "sbox_search_docs"
+    "sbox_search_docs",
+    "get_editor_events"
   ]
 }
